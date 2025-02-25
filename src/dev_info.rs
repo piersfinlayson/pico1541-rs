@@ -118,9 +118,16 @@ pub fn get_serial<'a>(
     
     // Clear any previous content
     serial.clear();
+
+    // Format only the last 8 bytes (or fewer) as hex string
+    let bytes_to_format = if byte_buf.len() > (MAX_SERIAL_STRING_LEN/2) {
+        &byte_buf[byte_buf.len() - (MAX_SERIAL_STRING_LEN/2)..]
+    } else {
+        &byte_buf[..]
+    };
     
     // Format the bytes as hex string
-    for b in byte_buf.iter() {
+    for b in bytes_to_format.iter() {
         // Using defmt's formatting or manual hex formatting
         use core::fmt::Write;
         match write!(serial, "{:02x}", b) {

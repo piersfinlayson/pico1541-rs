@@ -1,6 +1,6 @@
-//! This module handles USB Bulk transfers on the OUT endpoint (i.e.
-//! received by the device), and scheules the Protocol Handler to handle
-//! data in both directions.
+//! This module handles USB Bulk transfers on the OUT endpoint (i.e. received
+//! by the device), and scheules the Protocol Handler to handle data in both
+//! directions.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -19,7 +19,7 @@ use crate::constants::{
     LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE, MAX_WRITE_SIZE_USIZE, WATCHDOG_FEED_TIMER,
 };
 use crate::protocol::ProtocolHandler;
-use crate::WATCHDOG;
+use crate::{feed_watchdog, reboot_normal};
 
 /// The Bulk object contains the runner which handles bulk transfers on the
 /// OUT endpoint.
@@ -74,13 +74,8 @@ impl Bulk {
 
             // Feed the watchdog - whichever result we got.  We do this before
             // we process any endpoint activity, in case that takes a while.
-            WATCHDOG.lock(|w| {
-                w.borrow_mut()
-                    .as_mut()
-                    .expect("Watchdog doesn't exist - can't feed it")
-                    .feed()
-            });
-
+            feed_watchdog();
+            
             // If the endpoint was enabled, attempt to read in the data.
             if let Either::First(_) = either {
                 info!("OUT Endpoint enabled");
@@ -104,7 +99,7 @@ impl Bulk {
                     .await;
 
                     // Feed the watchog before doing anything else.
-                    WATCHDOG.lock(|w| w.borrow_mut().as_mut().unwrap().feed());
+                    feed_watchdog();
 
                     if let Either3::First(Ok(size)) = either {
                         // We got bulk data.  Handle it.
@@ -124,15 +119,7 @@ impl Bulk {
                         info!("Protocol handler exited - resetting");
 
                         // Trigger a reset
-                        WATCHDOG.lock(|w| {
-                            w.borrow_mut()
-                                .as_mut()
-                                .expect("Watchdog doesn't exist - can't reset")
-                                .trigger_reset()
-                        });
-
-                        // Failed to reset.  Try differently.
-                        cortex_m::peripheral::SCB::sys_reset();
+                        reboot_normal();
                     } else if let Either3::Third(_) = either {
                         // The timer expired, so try and read data again.
                         continue;

@@ -22,13 +22,14 @@ pub use built_info::RUSTC_VERSION as RUSTC_VERSION;
 pub use built_info::PKG_VERSION as PKG_VERSION;
 
 /// Log build-time information to the console.
-pub fn log_bin_info(bin_name: &str) {
+pub fn log_fw_info(bin_name: &str, serial: &str) {
     // General information
     info!("{} operating in {} mode", built_info::PKG_NAME, bin_name);
     info!("Author: {}", built_info::PKG_AUTHORS);
     info!("pico1541 Version: {}", built_info::PKG_VERSION);
     #[cfg(feature = "compatibility")]
     info!("xum1541 Version: {}", crate::constants::XUM1541_FIRMWARE_VERSION);
+    info!("Serial: {}", serial);
 
     // Git information
     info!("Git commit: {}", built_info::GIT_COMMIT_HASH.unwrap_or("unknown"));

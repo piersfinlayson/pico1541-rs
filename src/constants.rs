@@ -1,4 +1,8 @@
 //! This module contains constants for the embassy-rs Vendor Example.
+//! 
+//! It has multiple versions of constants that are used by different
+//! configurations, such as usb product string.  The correct version is
+//! selected by the dev_info module.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -64,7 +68,7 @@ pub const PICO1541_PRODUCT: &str = "pico1541 floppy adapter";
 
 /// USB Descriptor info - serial number string
 pub const XUM1541_SERIAL: &str = "000";
-pub const MAX_SERIAL_STRING_LEN: usize = 32;
+pub const MAX_SERIAL_STRING_LEN: usize = 16;
 
 /// USB Descriptor info - device class, subclass, and protocol
 pub const USB_CLASS: u8 = 0xff;

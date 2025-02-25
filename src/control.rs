@@ -10,21 +10,27 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::Handler;
-use rp2040_rom::ROM;
 
 use crate::protocol::ProtocolAction;
 use crate::types::Direction;
 use crate::PROTOCOL_ACTION;
 use crate::built::{GIT_VERSION, RUSTC_VERSION, PKG_VERSION};
 use crate::constants::{MAX_XUM_DEVINFO_SIZE_USIZE, INIT_CONTROL_RESPONSE_LEN, ECHO_CONTROL_RESPONSE_LEN};
+use crate::reboot_dfu;
 
 /// Handle USB events.
 pub struct Control {
+    // The interface number of this control handler.  Used to check that we
+    // only handle requests for this interface.
     if_num: InterfaceNumber,
 }
 
+// Error type used internally to device how to respond to a Control message.
 enum ControlError {
+    // Ignore means we return None from the control handler function.
     Ignore,
+
+    // Invalid means we return Rejected from the control handler function.
     Invalid,
 }
 
@@ -32,14 +38,18 @@ impl Handler for Control {
     /// Called when the USB device has been enabled or disabled.
     fn enabled(&mut self, enabled: bool) {
         match enabled {
-            true => info!("USB device enabled"),
+            true => {
+                info!("USB device enabled");
+            },
             false => info!("USB device disabled"),
         }
+        self.set_action(ProtocolAction::Uninitialize);
     }
 
     /// Called after a USB reset after the bus reset sequence is complete.
     fn reset(&mut self) {
         info!("USB device reset complete");
+        self.set_action(ProtocolAction::Uninitialize);
     }
 
     /// Called when the host has set the address of the device to `addr`.
@@ -53,6 +63,7 @@ impl Handler for Control {
             true => info!("USB device configuration enabled"),
             false => info!("USB device configuration disabled"),
         }
+        self.set_action(ProtocolAction::Uninitialize);
     }
 
     /// Called when the bus has entered or exited the suspend state.
@@ -65,6 +76,10 @@ impl Handler for Control {
                 info!("USB device resumed");
             }
         }
+
+        // It could be argued that we shoud store off the current state and
+        // reapply it after resume.  But we're not going to do that.
+        self.set_action(ProtocolAction::Uninitialize);
     }
 
     /// Respond to HostToDevice control messages, where the host sends us a command and
@@ -102,19 +117,20 @@ impl Handler for Control {
         // Handle the request and build the response
         match self.handle_in(&request, buf, req.length as usize) {
             Err(ControlError::Ignore) => None,
-            Err(ControlError::Invalid) => Some(InResponse::Rejected),
-            Ok(0) => Some(InResponse::Rejected),
+            Err(ControlError::Invalid) | Ok(0) => Some(InResponse::Rejected),
             Ok(len) => Some(InResponse::Accepted(&buf[..len])),
         }
     }
 }
 
-// Our own functions
+// Our own Control functions to help deal with the USB control requests.
 impl Control {
+    // Create a new instance of this control handler.
     pub fn new(if_num: InterfaceNumber) -> Self {
         Self { if_num }
     }
 
+    // Check the request is valid and supported.
     fn check_request(&self, req: Request, dir: Direction) -> Result<ControlRequest, ControlError> {
         // Only handle Class request types to an Interface.
         if req.request_type != RequestType::Class || req.recipient != Recipient::Interface {
@@ -160,32 +176,20 @@ impl Control {
                 // We only want to set the action to RESET if there's no action
                 // outstanding.  If there's a reset outstanding, it's a no-op.
                 // If we have initialize or uninitialize, they superceed.
-                PROTOCOL_ACTION.lock(|action| {
-                    let current_action = action.borrow().clone();
-                    if current_action.is_none() {
-                        *action.borrow_mut() = Some(ProtocolAction::Reset);
-                    } else {
-                        info!(
-                            "Reset request received - ignoring as oustanding action: {}",
-                            current_action
-                        );
-                    }
-                });
+                self.set_action(ProtocolAction::Reset);
             }
             ControlRequest::Shutdown => {
                 // Overwrite any existing action as this takes precedence
-                PROTOCOL_ACTION
-                    .lock(|action| *action.borrow_mut() = Some(ProtocolAction::Uninitialize));
+                self.set_action(ProtocolAction::Uninitialize);
             }
             ControlRequest::EnterBootloader => {
                 info!("Entering DFU bootloader");
-                unsafe {
-                    ROM::reset_usb_boot(0, 0);
-                }
-                // The reboot should happen immediately, so shouldn't reach
-                // here.
+                reboot_dfu(); // Does not return
             }
-            ControlRequest::TapBreak => info!("{}", request),
+            ControlRequest::TapBreak => {
+                // TODO - implement
+                info!("{}", request);
+            }
             _ => unreachable!(),
         };
         Ok(())
@@ -208,12 +212,11 @@ impl Control {
 
         // Perform any required actions, and fill in the response
         match request {
-            ControlRequest::Echo => buf[0] = 0x08,
+            ControlRequest::Echo => buf[0] = &ControlRequest::Echo as *const _ as u8,
             ControlRequest::Init => {
                 // Overwrite any existing action as initialize will also
                 // deinitialize first (and also reset if required)
-                PROTOCOL_ACTION
-                    .lock(|action| *action.borrow_mut() = Some(ProtocolAction::Initialize));
+                self.set_action(ProtocolAction::Initialize);
 
                 // Build the response
                 buf[0] = 0x08;
@@ -232,7 +235,7 @@ impl Control {
                 }
             },
             ControlRequest::RustcVer => {
-                // Extract the version number (1.83.0) from the full rustc
+                // Extract the version number (e.g. 1.83.0) from the full rustc
                 // version string
                 let version = RUSTC_VERSION
                     .split_whitespace()
@@ -240,7 +243,7 @@ impl Control {
                     .unwrap_or("unknown");
 
                 // Copy the version string to the buffer with null termination
-                let copy_len = core::cmp::min(len - 1, version.len()); // Reserve space for null terminator
+                let copy_len = core::cmp::min(len - 1, version.len());
                 buf[..copy_len].copy_from_slice(&version.as_bytes()[..copy_len]);
                 buf[copy_len] = 0;
             }
@@ -251,11 +254,43 @@ impl Control {
                 let version = PKG_VERSION;
                 let copy_len = core::cmp::min(len, version.len());
                 buf[..copy_len].copy_from_slice(&version.as_bytes()[..copy_len]);
+                if copy_len < len {
+                    // null terminate
+                    buf[copy_len] = 0;
+                }
             }
             _ => unreachable!(),
         };
 
         Ok(response_len)
+    }
+
+    // Sets the shared PROTOCOL_ACTION to the given action to signal to the
+    // ProtocolHandler object to take the appropriate action.
+    fn set_action(&self, action: ProtocolAction) {
+        PROTOCOL_ACTION.lock(|a| {
+            let current_action = a.borrow().clone();
+
+            match action {
+                // Initialize takes precedence over any other action
+                ProtocolAction::Initialize => *a.borrow_mut() = Some(ProtocolAction::Initialize),
+                
+                // Unitialize takes precedence over any other action
+                ProtocolAction::Uninitialize => *a.borrow_mut() = Some(ProtocolAction::Uninitialize),
+
+                // Only set the action to reset if there's no action
+                // outstanding
+                ProtocolAction::Reset => {
+                    match current_action {
+                        None => *a.borrow_mut() = Some(ProtocolAction::Reset),
+                        Some(a) => info!(
+                            "Reset request received - ignoring as oustanding action: {}",
+                            a
+                        ),
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -284,7 +319,10 @@ impl ControlRequest {
             | ControlRequest::GitRev
             | ControlRequest::RustcVer
             | ControlRequest::PkgVer => Direction::In,
-            _ => Direction::Out,
+            ControlRequest::Reset
+            | ControlRequest::Shutdown
+            | ControlRequest::EnterBootloader
+            | ControlRequest::TapBreak => Direction::Out,
         }
     }
 

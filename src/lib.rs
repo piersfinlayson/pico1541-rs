@@ -14,9 +14,13 @@
 #![no_std]
 #![no_main]
 
+// Provide some feature guidance
+#[cfg(not(any(feature = "compatibility", feature = "extended")))]
+compile_error!("Either 'xum1541/compatibility' or 'extended' feature must be enabled");
 #[cfg(all(feature = "compatibility", feature = "extended"))]
 compile_error!("Features 'xum1541/compatibility' and 'extended' cannot be enabled simultaneously");
 
+// Declare all of this library's modules.
 mod bulk;
 mod constants;
 mod control;
@@ -27,7 +31,6 @@ mod built;
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-
 use core::cell::RefCell;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
@@ -42,6 +45,7 @@ use embassy_usb::driver::{Driver, Endpoint as DriverEndpoint, EndpointType};
 use embassy_usb::{Builder, Config, UsbDevice};
 use static_cell::{ConstStaticCell, StaticCell};
 use heapless::String;
+use rp2040_rom::ROM;
 
 use control::Control;
 use protocol::ProtocolAction;
@@ -52,16 +56,37 @@ use constants::{
 };
 use dev_info::*;
 
-//
 // Statics
 //
-
 // We set up statics primarily to avoid lifetime issues, and to allow us to
 // spawn tasks (accessing these statics), and to split our code into
 // separate modules.
+//
+// These are a bit tricksy to get right, so here is some general guidance:
+//
+// - Use StaticCell for statics that cannot be initialized at compile time.
+//
+// - Use ConstStaticCell for statics that can be initialized at compile time.
+//   Note that initialization is different than mutability.  A ConstStaticCell
+//   can be mutable, when used with RefCell, but it must be initialized at
+//   compile time.
+//
+// - If your static will be immutable, that is all that is required.
+//
+// - If your static will be mutable, but you will be passing ownership of it
+//   to another object, then no Mutex is required either. 
+//
+// - If you need mutable access, you need to use a Mutex _and_ a RefCell.
+//   - Generally use CriticalSectionRawMutex, as these work on multi-core
+//     systems.
+//   - ThreadModeRawMutex is, as it sounds, so single threaded usage.
+//   - NoopRawMutex is for when you don't need a mutex.
+//
+//   Our implementation is not sufficiently dependent on performance to
+//   require optimization here, so we always use CriticalSectionRawMutex.
 
 // We use the WATCHDOG static to store the Watchdog object, so we can feed it
-// from all of our tasks and objects.
+// from all of our tasks and objects.  This is shared and mutable.
 //
 // TODO - As we have multiple tasks running concurrently, we should probably
 // implement a wrapper in order to ensure that one running runner (and other
@@ -72,7 +97,8 @@ static WATCHDOG: Mutex<CriticalSectionRawMutex, RefCell<Option<Watchdog>>> =
 // Our Control Handler handles Control requests that come in on the Control
 // endpoint, and the USB stack calls control_in() and control_out() for us
 // to handle them.  It also handles various USB device lifecycles events, such
-// as enabled, reset, address, configured, etc.
+// as enabled, reset, address, configured, etc.  We pass ownership of this to
+// our UsbDevice object, so we don't need anything other than a StaticCell.
 static CONTROL: StaticCell<Control> = StaticCell::new();
 
 // The BULK static contains our Bulk data handling object, which  a
@@ -85,31 +111,43 @@ static CONTROL: StaticCell<Control> = StaticCell::new();
 // host.  Think Initialize, Reset, etc.  The ProtocolHandler's runner also
 // handles any data which needs to be sent to the host in response to Bulk
 // commands from the host.
+//
+// Ownership is passed to the USB task, so nothing other than a StaticCell is
+// required. 
 static BULK: StaticCell<Bulk> = StaticCell::new();
 
 // The USB_DEVICE is primarily stored as a static to allow us to spawn a task
 // using the USB runner.  (This is the runner that schedules our Control
 // Handler.)  it is not used in other modules.
+//
+// Ownership is passed to the USB task, so nothing other than a StaticCell is
+// required.
 static USB_DEVICE: StaticCell<UsbDevice<'static, RpUsbDriver<'static, USB>>> = StaticCell::new();
 
 // The PROTOCOL_ACTION static is a Mutex that is used to allow communication
 // between the Control Handler and the Protocol Handler, so the Control
 // Handler can instruct the Protocol Handler to perform actions in response to
 // Control requests from the host.
+//
+// This object is shared between Control and ProtocolHandler (via Bulk), so we
+// need both a Mutex, we need a RefCell to allow us to mutate the object.
 static PROTOCOL_ACTION: Mutex<CriticalSectionRawMutex, RefCell<Option<ProtocolAction>>> =
     Mutex::new(RefCell::new(None));
 
 // The following statics are used to store the USB descriptor buffers and
 // control buffer.  We store them as statics to avoid lifetime issues when
 // creating the USB builder.
+//
+// The ownership of these is passed to the USB builder, so we don't need
+
 static CONFIG_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 static BOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 static MSOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 static CONTROL_BUF: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 
 // Create a static String to store the serial number in.  We'll make it a
-// ConstStaticCell, so we can initialize it now, and then take it later to
-// give to USB config.
+// ConstStaticCell, so we initialize it  to allocate memory for it, and then
+// take it later to give to USB config.
 static SERIAL: ConstStaticCell<String::<MAX_SERIAL_STRING_LEN>> = ConstStaticCell::new(String::new());
 
 // Bind the hardware USB interrupt to the USB stack.  Interrupts are the
@@ -119,11 +157,9 @@ bind_interrupts!(struct Irqs {
 });
 
 // Our main function.  This is the entry point for our application and like
-// all embedded implementations, we do not want it to exit as that would mean
+// most embedded implementations, we do not want it to exit as that would mean
 // the device has halted.
 pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
-    built::log_bin_info(bin_name);
-
     // Get device peripherals.  This gives us access to the hardware - like
     // the USB and Watchdog.  We extract the ones we need to avoid having to
     // pass the entire object around, partially moving it.
@@ -133,22 +169,28 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     let mut p_flash = p.FLASH;
     let mut p_dma_ch0 = p.DMA_CH0;
 
-    // Get the last reset reason.  There's supposed to be a reset_reason()
-    // function on Watchdog, but calling that isn't compiled in.
-    let watchdog = pac::WATCHDOG;
-    let reason = watchdog.reason().read();
-    if reason.force() {
-        info!("Last reset was forced");
-    } else if reason.timer() {
-        info!("Last reset was due to watchdog timerp'");
-    } else {
-        info!("Reason for last reset unknown");
-    }
-
     // Get the serial number.  Do it now, before RpUsbDriver::new() partially
     // moves p.
     let mut serial = SERIAL.take();
     get_serial(&mut p_flash, &mut p_dma_ch0, &mut serial);
+    info!("Device serial: {}", serial);
+
+    // Log the information about this firmware build.
+    built::log_fw_info(bin_name, &serial);
+
+    // Get the last reset reason.  There's supposed to be a reset_reason()
+    // function on Watchdog, but while it's in the source, it doesn't seem to
+    // be available in the embassy_rp crate.
+    let watchdog = pac::WATCHDOG;
+    let reason = watchdog.reason().read();
+    let rr_str = if reason.force() {
+        "forced";
+    } else if reason.timer() {
+        "watchdog timer";
+    } else {
+        "unknown";
+    };
+    info!("Last reset reason: {}", rr_str);
 
     // Set up the watchdog
     let mut watchdog = Watchdog::new(p_watchdog);
@@ -158,7 +200,10 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // Create a new USB device
     let mut driver = RpUsbDriver::new(p_usb, Irqs);
 
-    // Set up the USB device descriptor 
+    // Set up the USB device descriptor.  Differences in the USB device
+    // values between our different firmware build options/binaries are
+    // handled within the dev_info module, so this doesn't need to worry
+    // about that.
     let mut config = Config::new(VENDOR_ID, PRODUCT_ID);
     config.manufacturer = Some(MANUFACTURER);
     config.product = Some(PRODUCT);
@@ -176,7 +221,9 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     config.composite_with_iads = false;
 
     // Allocate the endpoints.  We do this before we move driver into the
-    // builder, as we need to assign specific endpoints numbers.
+    // builder, as we need to assign specific endpoints numbers in xum1541
+    // mode.
+    //
     // If we didn't need to assign specific numbers, we could do this after
     // we create the InterfaceAltBuilder using alt_setting() below.
     //
@@ -186,7 +233,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // ``
     let (ep_in, ep_out) = allocate_endpoints(&mut driver);
 
-    // Create a USB builder giving it out Static descriptors and control
+    // Create a USB builder giving it our Static descriptors and control
     // buffer.
     let mut builder = Builder::new(
         driver,
@@ -197,7 +244,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
         CONTROL_BUF.take(),
     );
 
-    // Set up the function and interface for the Bulk class
+    // Set up the function and interface for the Vendor class
     let mut func = builder.function(USB_CLASS, USB_SUB_CLASS, USB_PROTOCOL);
     let mut interface = func.interface();
     let if_num = interface.interface_number();
@@ -239,21 +286,12 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     let bulk = Bulk::new(ep_out, ep_in);
     let bulk = BULK.init(bulk);
 
-    // Spawn a task to handle all USB related activity.  If we were doing
-    // other activities, we could also spawn them.
+    // Spawn a task to handle all USB related activity.
     match spawner.spawn(usb_task(usb, bulk)) {
         Ok(_) => (),
         Err(e) => {
             error!("Failed to spawn USB task: {}", e);
-            WATCHDOG.lock(|w| {
-                w.borrow_mut()
-                    .as_mut()
-                    .expect("Watchdog doesn't exist - can't reset")
-                    .trigger_reset()
-            });
-
-            // Failed to reset.  Try again, differently.
-            cortex_m::peripheral::SCB::sys_reset();
+            reboot_normal();
         }
     }
 
@@ -280,22 +318,14 @@ async fn usb_task(
     let either = select(usb.run(), bulk.run()).await;
 
     // If we got here one of our futures returned.  This is very bad news,
-    // as some work is not going to get done, so we reboot the device, just
+    // as some work is not going to get done, so we reboot the device just
     // in case our watchdog strategy didn't work.
     match either {
         Either::First(_) => error!("USB future returned"),
         Either::Second(_) => error!("Bulk future returned"),
     }
 
-    WATCHDOG.lock(|w| {
-        w.borrow_mut()
-            .as_mut()
-            .expect("Watchdog doesn't exist - can't reset")
-            .trigger_reset()
-    });
-
-    // Failed to reset.  Try again, differently.
-    cortex_m::peripheral::SCB::sys_reset();
+    reboot_normal();
 }
 
 // Used to allocate specific endpoint numbers.  We do this to maintain
@@ -318,6 +348,9 @@ fn allocate_endpoints(
     // 16 endpoints in hardware, hence the restriction.)  Note that the IN
     // endpoint is ORed with 0x80, so we have to test for 0x80 | num to get
     // the right number.
+    //
+    // The actual required endpoint numbers are set in the dev_info module,
+    // based on which firmware build is being compiled.
 
     // Get the IN endpoint (IN from device to host)
     let ep_in: Endpoint<'static, USB, In> = loop {
@@ -347,4 +380,36 @@ fn allocate_endpoints(
 
     // Return the endpoints.
     (ep_in, ep_out)
+}
+
+// Called to perform a standard device reboot.  (Normally as in not entering
+// BOOTSEL/DFU mode.)
+fn reboot_normal() -> ! {
+    // Try rebooting using the watchdog
+    WATCHDOG.lock(|w| {
+        w.borrow_mut()
+            .as_mut()
+            .expect("Watchdog doesn't exist  - will try and reset another way")
+            .trigger_reset()
+    });
+
+    // Failed to reset.  Try again, differently.
+    cortex_m::peripheral::SCB::sys_reset();
+}
+
+// Called to perform a reboot into BOOTSEL/DFU mode.
+fn reboot_dfu() -> ! {
+    unsafe {
+        ROM::reset_usb_boot(0, 0);
+    };
+}
+
+// Called to feed the watchdog
+fn feed_watchdog() {
+    WATCHDOG.lock(|w| {
+        w.borrow_mut()
+            .as_mut()
+            .expect("Watchdog doesn't exist - can't feed it")
+            .feed()
+    });
 }
