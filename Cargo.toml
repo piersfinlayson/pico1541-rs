@@ -1,0 +1,85 @@
+[package]
+name = "pico1541-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Piers Finlayson <piers@piers.rocks>"]
+description = "A USB-based Commodore disk drive adapter for PCs, compatible with OpenCBM and drop-in replacement for the xum1541 "
+repository = "https://github.com/piersfinlayson/pico1541-rs"
+readme = "README.md"
+license = "GPLv3"
+keywords = ["OpenCBM", "xum1541", "Commodore", "disk", "embassy"]
+
+# Do not use features manually to build different versions of the firmware.
+# Instead, use cargo build --bin xum1541|pico1541|pico1541w
+[features]
+xum1541 = [ "compatibility" ]
+pico1541 = [ "extended" ]
+pico1541w = [ "extended", "wifi" ]
+compatibility = []
+extended = []
+wifi = []
+
+[lib]
+name = "pico1541_rs"
+path = "src/lib.rs"
+
+# Builds an xum1541 compatible firmware - you have manually specify the
+# required feature(s)
+[[bin]]
+name = "xum1541"
+path = "src/bin/xum1541.rs"
+test = false
+required-features = ["xum1541"]
+
+# Builds a pico1541 firmware  - you have to manually specify the required
+# feature(s)
+[[bin]]
+name = "pico1541"
+path = "src/bin/pico1541.rs"
+test = false
+required-features = ["pico1541"]
+
+# Builds pico1541 firmware with WiFi support - you have to manually specify
+# the required feature(s)
+[[bin]]
+name = "pico1541w"
+path = "src/bin/pico1541w.rs"
+test = false
+required-features = ["pico1541w"]
+
+[dependencies]
+embassy-executor = { version = "0.7.0", features = ["task-arena-size-98304", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-rp = { version = "0.3.0", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
+embassy-usb = { version = "0.4.0", features = ["defmt"] }
+embassy-futures = { version = "0.1.0" }
+embassy-sync = { version = "0.6.2", features = ["defmt"] }
+embassy-time = { version = "0.4.0", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-boot = { version = "0.4.0" }
+static_cell = { version = "2.1" }
+portable-atomic = { version = "1.10", features = ["critical-section"] }
+heapless = { version = "0.8.0" }
+
+cyw43 = { version = "0.3.0", features = ["defmt", "firmware-logs"] }
+cyw43-pio = { version = "0.3.0", features = ["defmt"] }
+
+defmt = "0.3"
+defmt-rtt = "0.4"
+
+cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m-rt = "0.7.0"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+rp2040-rom = "0.1.0"
+
+[build-dependencies]
+built = { version = "0.7", features = ["git2", "chrono"] }
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = 'z'
+
+[profile.dev]
+debug = 2
+lto = true
+opt-level = "z"
