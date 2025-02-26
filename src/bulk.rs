@@ -14,12 +14,30 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In, Out};
 use embassy_time::{Instant, Timer};
 use embassy_usb::driver::{Endpoint as DriverEndpoint, EndpointOut};
+use static_cell::StaticCell;
 
 use crate::constants::{
-    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE, MAX_WRITE_SIZE_USIZE, WATCHDOG_FEED_TIMER,
+    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE, MAX_WRITE_SIZE_USIZE, BULK_WATCHDOG_TIMER,
 };
 use crate::protocol::ProtocolHandler;
-use crate::{feed_watchdog, reboot_normal};
+use crate::watchdog::{feed_watchdog, reboot_normal, TaskId};
+use crate::iec::IecBus;
+use crate::display::{update_status, DisplayType};
+
+// The BULK static contains our Bulk data handling object, which  a
+// Protocol Handler object.
+//
+// The Bulk object consists of a runner that listens for data on the OUT
+// endpoint and then passes it to the ProtocolHandler to process.  It also
+// runs the ProtocolHandler's runner, which listens ProtocolActions which are
+// signaled by the Control object in response to Control requests from the
+// host.  Think Initialize, Reset, etc.  The ProtocolHandler's runner also
+// handles any data which needs to be sent to the host in response to Bulk
+// commands from the host.
+//
+// Ownership is passed to the USB task, so nothing other than a StaticCell is
+// required. 
+pub static BULK: StaticCell<Bulk> = StaticCell::new();
 
 /// The Bulk object contains the runner which handles bulk transfers on the
 /// OUT endpoint.
@@ -44,10 +62,10 @@ impl Bulk {
     ///
     /// # Returns
     /// `Self`
-    pub fn new(out_ep: Endpoint<'static, USB, Out>, in_ep: Endpoint<'static, USB, In>) -> Self {
+    pub fn new(out_ep: Endpoint<'static, USB, Out>, in_ep: Endpoint<'static, USB, In>, iec_bus: IecBus) -> Self {
         Self {
             read_ep: out_ep,
-            protocol: ProtocolHandler::new(in_ep),
+            protocol: ProtocolHandler::new(in_ep, iec_bus),
         }
     }
 
@@ -68,17 +86,20 @@ impl Bulk {
             // so we can feed the watchdog
             let either = select(
                 self.read_ep.wait_enabled(),
-                Timer::after(WATCHDOG_FEED_TIMER),
+                Timer::after(BULK_WATCHDOG_TIMER),
             )
             .await;
 
             // Feed the watchdog - whichever result we got.  We do this before
             // we process any endpoint activity, in case that takes a while.
-            feed_watchdog();
-            
+            feed_watchdog(TaskId::Bulk);
+
             // If the endpoint was enabled, attempt to read in the data.
             if let Either::First(_) = either {
                 info!("OUT Endpoint enabled");
+
+                update_status(DisplayType::Ready);
+
                 loop {
                     let now = Instant::now();
                     if now >= next_log_instant {
@@ -94,12 +115,12 @@ impl Bulk {
                     let either = select3(
                         self.read_ep.read(&mut data),
                         self.protocol.run(),
-                        Timer::after(WATCHDOG_FEED_TIMER),
+                        Timer::after(BULK_WATCHDOG_TIMER),
                     )
                     .await;
 
                     // Feed the watchog before doing anything else.
-                    feed_watchdog();
+                    feed_watchdog(TaskId::Bulk);
 
                     if let Either3::First(Ok(size)) = either {
                         // We got bulk data.  Handle it.
@@ -126,11 +147,19 @@ impl Bulk {
                     }
 
                     // We hit an error reading, so we're done reading from
-                    // the endpoint this time.
+                    // the endpoint.
                     break;
                 }
-                info!("Finished processing data on OUT Endpoint");
+
+                update_status(DisplayType::Init);
+                info!("OUT Endpoint disabled");
             }
         }
     }
 }
+
+/// Bulk task runner.
+#[embassy_executor::task]
+pub async fn bulk_task(bulk: &'static mut Bulk) -> ! {
+    bulk.run().await;
+} 

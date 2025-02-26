@@ -14,13 +14,14 @@
 #![no_std]
 #![no_main]
 
-// Provide some feature guidance
+// Provide some feature guidance when compiling the library.
 #[cfg(not(any(feature = "compatibility", feature = "extended")))]
 compile_error!("Either 'xum1541/compatibility' or 'extended' feature must be enabled");
 #[cfg(all(feature = "compatibility", feature = "extended"))]
 compile_error!("Features 'xum1541/compatibility' and 'extended' cannot be enabled simultaneously");
 
 // Declare all of this library's modules.
+mod usb;
 mod bulk;
 mod constants;
 mod control;
@@ -28,33 +29,24 @@ mod protocol;
 mod types;
 mod dev_info;
 mod built;
+mod display;
+mod driver;
+mod iec;
+mod gpio;
+mod watchdog;
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use core::cell::RefCell;
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
-use embassy_rp::pac;
-use embassy_rp::usb::{Driver as RpUsbDriver, Endpoint, In, InterruptHandler, Out};
-use embassy_rp::watchdog::Watchdog;
-use embassy_rp::{bind_interrupts, peripherals::USB};
-use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::Timer;
-use embassy_usb::descriptor::{SynchronizationType, UsageType};
-use embassy_usb::driver::{Driver, Endpoint as DriverEndpoint, EndpointType};
-use embassy_usb::{Builder, Config, UsbDevice};
-use static_cell::{ConstStaticCell, StaticCell};
-use heapless::String;
-use rp2040_rom::ROM;
 
-use control::Control;
-use protocol::ProtocolAction;
-use bulk::Bulk;
-use constants::{
-    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE, MAX_PACKET_SIZE_0, USB_CLASS, USB_POWER_MA, USB_PROTOCOL, USB_SUB_CLASS, MAX_SERIAL_STRING_LEN,
-    WATCHDOG_TIMER,
-};
-use dev_info::*;
+use bulk::bulk_task;
+use constants::{LOOP_LOG_INTERVAL, BULK_WATCHDOG_TIMER, STATUS_DISPLAY_WATCHDOG_TIMER, };
+use dev_info::get_serial;
+use display::status_task;
+use gpio::Gpio;
+use watchdog::{Watchdog, TaskId, reboot_normal, watchdog_task, register_task};
+use usb::{UsbStack, usb_task};
 
 // Statics
 //
@@ -84,77 +76,8 @@ use dev_info::*;
 //
 //   Our implementation is not sufficiently dependent on performance to
 //   require optimization here, so we always use CriticalSectionRawMutex.
-
-// We use the WATCHDOG static to store the Watchdog object, so we can feed it
-// from all of our tasks and objects.  This is shared and mutable.
 //
-// TODO - As we have multiple tasks running concurrently, we should probably
-// implement a wrapper in order to ensure that one running runner (and other
-// failed runners) don't keep the device alive.
-static WATCHDOG: Mutex<CriticalSectionRawMutex, RefCell<Option<Watchdog>>> =
-    Mutex::new(RefCell::new(None));
-
-// Our Control Handler handles Control requests that come in on the Control
-// endpoint, and the USB stack calls control_in() and control_out() for us
-// to handle them.  It also handles various USB device lifecycles events, such
-// as enabled, reset, address, configured, etc.  We pass ownership of this to
-// our UsbDevice object, so we don't need anything other than a StaticCell.
-static CONTROL: StaticCell<Control> = StaticCell::new();
-
-// The BULK static contains our Bulk data handling object, which  a
-// Protocol Handler object.
-//
-// The Bulk object consists of a runner that listens for data on the OUT
-// endpoint and then passes it to the ProtocolHandler to process.  It also
-// runs the ProtocolHandler's runner, which listens ProtocolActions which are
-// signaled by the Control object in response to Control requests from the
-// host.  Think Initialize, Reset, etc.  The ProtocolHandler's runner also
-// handles any data which needs to be sent to the host in response to Bulk
-// commands from the host.
-//
-// Ownership is passed to the USB task, so nothing other than a StaticCell is
-// required. 
-static BULK: StaticCell<Bulk> = StaticCell::new();
-
-// The USB_DEVICE is primarily stored as a static to allow us to spawn a task
-// using the USB runner.  (This is the runner that schedules our Control
-// Handler.)  it is not used in other modules.
-//
-// Ownership is passed to the USB task, so nothing other than a StaticCell is
-// required.
-static USB_DEVICE: StaticCell<UsbDevice<'static, RpUsbDriver<'static, USB>>> = StaticCell::new();
-
-// The PROTOCOL_ACTION static is a Mutex that is used to allow communication
-// between the Control Handler and the Protocol Handler, so the Control
-// Handler can instruct the Protocol Handler to perform actions in response to
-// Control requests from the host.
-//
-// This object is shared between Control and ProtocolHandler (via Bulk), so we
-// need both a Mutex, we need a RefCell to allow us to mutate the object.
-static PROTOCOL_ACTION: Mutex<CriticalSectionRawMutex, RefCell<Option<ProtocolAction>>> =
-    Mutex::new(RefCell::new(None));
-
-// The following statics are used to store the USB descriptor buffers and
-// control buffer.  We store them as statics to avoid lifetime issues when
-// creating the USB builder.
-//
-// The ownership of these is passed to the USB builder, so we don't need
-
-static CONFIG_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
-static BOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
-static MSOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
-static CONTROL_BUF: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
-
-// Create a static String to store the serial number in.  We'll make it a
-// ConstStaticCell, so we initialize it  to allocate memory for it, and then
-// take it later to give to USB config.
-static SERIAL: ConstStaticCell<String::<MAX_SERIAL_STRING_LEN>> = ConstStaticCell::new(String::new());
-
-// Bind the hardware USB interrupt to the USB stack.  Interrupts are the
-// primary mechanism the USB stack uses to receive data from hardware.
-bind_interrupts!(struct Irqs {
-    USBCTRL_IRQ => InterruptHandler<USB>;
-});
+// The statics are stored in the module that creates them.
 
 // Our main function.  This is the entry point for our application and like
 // most embedded implementations, we do not want it to exit as that would mean
@@ -164,136 +87,64 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // the USB and Watchdog.  We extract the ones we need to avoid having to
     // pass the entire object around, partially moving it.
     let p = embassy_rp::init(Default::default());
-    let p_watchdog = p.WATCHDOG;
-    let p_usb = p.USB;
-    let mut p_flash = p.FLASH;
-    let mut p_dma_ch0 = p.DMA_CH0;
+    let embassy_rp::Peripherals {
+        PIN_0: pin_0, PIN_1: pin_1, PIN_2: pin_2, PIN_3: pin_3, 
+        PIN_4: pin_4, PIN_5: pin_5, PIN_6: pin_6, PIN_7: pin_7,
+        PIN_8: pin_8, PIN_9: pin_9, PIN_10: pin_10, PIN_11: pin_11, 
+        PIN_12: pin_12, PIN_13: pin_13, PIN_14: pin_14, PIN_15: pin_15,
+        PIN_16: pin_16, PIN_17: pin_17, PIN_18: pin_18, PIN_19: pin_19, 
+        PIN_20: pin_20, PIN_21: pin_21, PIN_22: pin_22, PIN_23: pin_23,
+        PIN_24: pin_24, PIN_25: pin_25, PIN_26: pin_26, PIN_27: pin_27, 
+        PIN_28: pin_28, PIN_29: pin_29,
+        WATCHDOG: p_watchdog,
+        USB: p_usb,
+        FLASH: p_flash,
+        DMA_CH0: p_dma_ch0,
+        ..
+    } = p;
 
-    // Get the serial number.  Do it now, before RpUsbDriver::new() partially
-    // moves p.
-    let mut serial = SERIAL.take();
-    get_serial(&mut p_flash, &mut p_dma_ch0, &mut serial);
-    info!("Device serial: {}", serial);
+    // Load the serial number.  This is done early, so we can log it.
+    let mut p_flash = p_flash;
+    let mut p_dma_ch0 = p_dma_ch0;
+    let (log_serial, usb_serial) = get_serial(&mut p_flash, &mut p_dma_ch0);
 
     // Log the information about this firmware build.
-    built::log_fw_info(bin_name, &serial);
+    built::log_fw_info(bin_name, &log_serial);
 
-    // Get the last reset reason.  There's supposed to be a reset_reason()
-    // function on Watchdog, but while it's in the source, it doesn't seem to
-    // be available in the embassy_rp crate.
-    let watchdog = pac::WATCHDOG;
-    let reason = watchdog.reason().read();
-    let rr_str = if reason.force() {
-        "forced";
-    } else if reason.timer() {
-        "watchdog timer";
-    } else {
-        "unknown";
-    };
-    info!("Last reset reason: {}", rr_str);
-
-    // Set up the watchdog
-    let mut watchdog = Watchdog::new(p_watchdog);
-    watchdog.start(WATCHDOG_TIMER);
-    WATCHDOG.lock(|w| *w.borrow_mut() = Some(watchdog));
-
-    // Create a new USB device
-    let mut driver = RpUsbDriver::new(p_usb, Irqs);
-
-    // Set up the USB device descriptor.  Differences in the USB device
-    // values between our different firmware build options/binaries are
-    // handled within the dev_info module, so this doesn't need to worry
-    // about that.
-    let mut config = Config::new(VENDOR_ID, PRODUCT_ID);
-    config.manufacturer = Some(MANUFACTURER);
-    config.product = Some(PRODUCT);
-    config.serial_number = Some(serial);
-    config.max_power = USB_POWER_MA;
-    config.max_packet_size_0 = MAX_PACKET_SIZE_0;
-
-    // Set the device class, subclass, and protocol.
-    config.device_class = USB_CLASS;
-    config.device_sub_class = USB_SUB_CLASS;
-    config.device_protocol = USB_PROTOCOL;
-
-    // The default is composite with IADs, which gives use device class code
-    // 0xEF, with is a miscellaneous device.
-    config.composite_with_iads = false;
-
-    // Allocate the endpoints.  We do this before we move driver into the
-    // builder, as we need to assign specific endpoints numbers in xum1541
-    // mode.
-    //
-    // If we didn't need to assign specific numbers, we could do this after
-    // we create the InterfaceAltBuilder using alt_setting() below.
-    //
-    // ```rust
-    // let ep_out = alt.endpoint_bulk_in(config.max_packet_size);
-    // let ep_in = alt.endpoint_bulk_out(config.max_packet_size);
-    // ``
-    let (ep_in, ep_out) = allocate_endpoints(&mut driver);
-
-    // Create a USB builder giving it our Static descriptors and control
-    // buffer.
-    let mut builder = Builder::new(
-        driver,
-        config,
-        CONFIG_DESC.take(),
-        BOS_DESC.take(),
-        MSOS_DESC.take(),
-        CONTROL_BUF.take(),
+    // Create the objects that need GPIOs.  We do this all at once so there is
+    // a single place in the code that allocates GPIOs - to make it easier to
+    // see what is being used.
+    let (iec_bus, ) = Gpio::create_pin_objects(
+        pin_0, pin_1, pin_2, pin_3, pin_4, pin_5, pin_6, pin_7, pin_8, pin_9, 
+        pin_10, pin_11, pin_12, pin_13, pin_14, pin_15, pin_16, pin_17, pin_18, pin_19, 
+        pin_20, pin_21, pin_22, pin_23, pin_24, pin_25, pin_26, pin_27, pin_28, pin_29
     );
 
-    // Set up the function and interface for the Vendor class
-    let mut func = builder.function(USB_CLASS, USB_SUB_CLASS, USB_PROTOCOL);
-    let mut interface = func.interface();
-    let if_num = interface.interface_number();
-    let mut alt = interface.alt_setting(USB_CLASS, USB_SUB_CLASS, USB_PROTOCOL, None);
+    // Create the USB stack and the Bulk object.  We do this at the same time
+    // because Bulk needs the endpoints from the USB Stack creation.
+    let (usb, bulk) = UsbStack::create_static(p_usb, usb_serial, iec_bus);
 
-    // Set the endpoints to those we created above using the
-    // InterfaceAltBuilder
-    alt.endpoint_descriptor(
-        ep_in.info(),
-        SynchronizationType::NoSynchronization,
-        UsageType::DataEndpoint,
-        &[],
-    );
-    alt.endpoint_descriptor(
-        ep_out.info(),
-        SynchronizationType::NoSynchronization,
-        UsageType::DataEndpoint,
-        &[],
-    );
+    // Set up the watchdog - stores it in the WATCHDOG static.  We do this
+    // before we create any tasks (as they might try and access the static
+    // once that's happened, in order to feed it).
+    Watchdog::create_static(p_watchdog);
 
-    // Drop func, to allow us to use the builder again.  Otherwise builder is
-    // already borrowed mutably by func.
-    drop(func);
+    // Spawn the Status Display, USB and Bulk tasks.  We do this before we
+    // start the watchdog, as we want to make sure the tasks are running
+    // and reading to feed it.  (Feeding can happen before the watchdog is
+    // started);
+    spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
+    spawn_or_reboot(spawner.spawn(usb_task(usb)), "USB");
+    spawn_or_reboot(spawner.spawn(bulk_task(bulk)), "Bulk");
 
-    // Create a handler for USB events and set it using builder.  We make it
-    // static to avoid lifetime issues.
-    let handler = Control::new(if_num);
-    let handler = CONTROL.init(handler);
-    builder.handler(handler);
+    // Register the tasks with the watchdog.  We do this after we have created
+    // the tasks, so that the watchdog doesn't expect to be fed until they are#
+    // running.
+    register_task(TaskId::Bulk, BULK_WATCHDOG_TIMER);
+    register_task(TaskId::Display, STATUS_DISPLAY_WATCHDOG_TIMER);
 
-    // Build the UsbDevice and store it as a Static so we can spawn a task
-    // with it.
-    let usb = builder.build();
-    let usb = USB_DEVICE.init(usb);
-
-    // Create a Bulk object, which will listen for data on the OUT endpoint
-    // and feed the watchdog.  We only feed it from Bulk::run(), and not
-    // usb.run() because usb.run() is not cancel safe.
-    let bulk = Bulk::new(ep_out, ep_in);
-    let bulk = BULK.init(bulk);
-
-    // Spawn a task to handle all USB related activity.
-    match spawner.spawn(usb_task(usb, bulk)) {
-        Ok(_) => (),
-        Err(e) => {
-            error!("Failed to spawn USB task: {}", e);
-            reboot_normal();
-        }
-    }
+    // Now spawn the watchdog task.
+    spawn_or_reboot(spawner.spawn(watchdog_task()), "Watchdog");
 
     // Log every so often and avoid letting main() return.
     loop {
@@ -302,114 +153,11 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     }
 }
 
-// Our USB task.  This is the primary task that runs USB functionality.  It
-// runs the USB stack, and the Bulk handler (which in turn runs the
-// ProtocolHandler, and feeds the watchdog).
-//
-// This function never returns, so the device runs forever.
-#[embassy_executor::task]
-async fn usb_task(
-    usb: &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>>,
-    bulk: &'static mut Bulk,
-) -> ! {
-    // Run a select on the USB stack and the Bulk handler.  If either of
-    // these futures return, we want to know about it.  (If we used join,
-    // we would only know when both returned.)
-    let either = select(usb.run(), bulk.run()).await;
-
-    // If we got here one of our futures returned.  This is very bad news,
-    // as some work is not going to get done, so we reboot the device just
-    // in case our watchdog strategy didn't work.
-    match either {
-        Either::First(_) => error!("USB future returned"),
-        Either::Second(_) => error!("Bulk future returned"),
+// Helper method to spawn tasks
+fn spawn_or_reboot<T, E: defmt::Format>(spawn_result: Result<T, E>, task_name: &str) {
+    if let Err(e) = spawn_result {
+        error!("Failed to spawn task: {}, error: {}", task_name, e);
+        reboot_normal();
     }
-
-    reboot_normal();
 }
 
-// Used to allocate specific endpoint numbers.  We do this to maintain
-// backwards compatibility with the C version of this example (and another
-// device which was the basis for the protocol support herein).  This example
-// is designed to work with an existing host immplementation, and relies on
-// endpoints numbers being as used here.
-//
-// If you change important USB descriptor information, like interfaces and
-// endpoints numbers, but the OS has cached the device information (based on
-// vendor ID and product ID), it can be a pain to recover from. To do so, on
-// Windows, uninstall the device from Device Manager, on linux run:
-// ```sudo udevadm control --reload-rules && sudo udevadm trigger```
-fn allocate_endpoints(
-    driver: &mut RpUsbDriver<'static, USB>,
-) -> (Endpoint<'static, USB, In>, Endpoint<'static, USB, Out>) {
-    // Loop through allocating the endpoint numbers until we get the ones we
-    // want.  The Pi supports endpoints numbers 0-15 (0x00-0x0F) and will
-    // assign them sequentially.  (The RP2040 chip only supports a total of
-    // 16 endpoints in hardware, hence the restriction.)  Note that the IN
-    // endpoint is ORed with 0x80, so we have to test for 0x80 | num to get
-    // the right number.
-    //
-    // The actual required endpoint numbers are set in the dev_info module,
-    // based on which firmware build is being compiled.
-
-    // Get the IN endpoint (IN from device to host)
-    let ep_in: Endpoint<'static, USB, In> = loop {
-        let ep = driver
-            .alloc_endpoint_in(EndpointType::Bulk, MAX_EP_PACKET_SIZE, 0)
-            .expect("Unable to allocate IN endpoint");
-        if ep.info().addr == IN_EP.into() {
-            break ep;
-        }
-    };
-    if ep_in.info().addr != IN_EP.into() {
-        panic!("Unable to allocate 0x03 as OUT endpoint");
-    }
-
-    // Do the same for the OUT endpoint (OUT from host to device)
-    let ep_out: Endpoint<'static, USB, Out> = loop {
-        let ep = driver
-            .alloc_endpoint_out(EndpointType::Bulk, MAX_EP_PACKET_SIZE, 0)
-            .expect("Unable to allocate OUT endpoint");
-        if ep.info().addr == OUT_EP.into() {
-            break ep;
-        }
-    };
-    if ep_out.info().addr != OUT_EP.into() {
-        panic!("Unable to allocate 0x04 as OUT endpoint");
-    }
-
-    // Return the endpoints.
-    (ep_in, ep_out)
-}
-
-// Called to perform a standard device reboot.  (Normally as in not entering
-// BOOTSEL/DFU mode.)
-fn reboot_normal() -> ! {
-    // Try rebooting using the watchdog
-    WATCHDOG.lock(|w| {
-        w.borrow_mut()
-            .as_mut()
-            .expect("Watchdog doesn't exist  - will try and reset another way")
-            .trigger_reset()
-    });
-
-    // Failed to reset.  Try again, differently.
-    cortex_m::peripheral::SCB::sys_reset();
-}
-
-// Called to perform a reboot into BOOTSEL/DFU mode.
-fn reboot_dfu() -> ! {
-    unsafe {
-        ROM::reset_usb_boot(0, 0);
-    };
-}
-
-// Called to feed the watchdog
-fn feed_watchdog() {
-    WATCHDOG.lock(|w| {
-        w.borrow_mut()
-            .as_mut()
-            .expect("Watchdog doesn't exist - can't feed it")
-            .feed()
-    });
-}

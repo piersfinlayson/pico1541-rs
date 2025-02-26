@@ -13,12 +13,25 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
 use embassy_time::Timer;
 use embassy_usb::driver::EndpointIn;
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
+use core::cell::RefCell;
 use heapless::Vec;
 
 use crate::constants::{
     MAX_EP_PACKET_SIZE, MAX_READ_SIZE, MAX_WRITE_SIZE, MAX_WRITE_SIZE_USIZE, PROTOCOL_HANDLER_TIMER,
 };
-use crate::PROTOCOL_ACTION;
+use crate::iec::IecBus;
+use crate::display::{DisplayType, update_status};
+
+// The PROTOCOL_ACTION static is a Mutex that is used to allow communication
+// between the Control Handler and the Protocol Handler, so the Control
+// Handler can instruct the Protocol Handler to perform actions in response to
+// Control requests from the host.
+//
+// This object is shared between Control and ProtocolHandler (via Bulk), so we
+// need both a Mutex, we need a RefCell to allow us to mutate the object.
+pub static PROTOCOL_ACTION: Mutex<CriticalSectionRawMutex, RefCell<Option<ProtocolAction>>> =
+    Mutex::new(RefCell::new(Some(ProtocolAction::Uninitialize)));
 
 // ProtocolState is used by ProtocolHandler to store its state.
 #[derive(PartialEq)]
@@ -204,6 +217,8 @@ impl Read {
 ///
 /// It is initialized, uninitialized and reset via control requests, and these
 /// are signalled via ProtocolAction.
+#[allow(dead_code)]
+
 pub struct ProtocolHandler {
     // The state of the ProtocolHandler.
     state: ProtocolState,
@@ -215,6 +230,9 @@ pub struct ProtocolHandler {
     // operation, and is set when a new command is received, and cleared when
     // the operation is complete, or `Self::state` is changed.
     transfer: Option<Transfer>,
+
+    // The IEC bus object.
+    iec_bus: IecBus,
 }
 
 impl ProtocolHandler {
@@ -223,11 +241,12 @@ impl ProtocolHandler {
     /// The Bulk object retains the OUT (read) endpoint as this must be read
     /// from within the main Bulk future runner (which hands bulk OUT
     /// transfers).
-    pub fn new(write_ep: Endpoint<'static, USB, In>) -> Self {
+    pub fn new(write_ep: Endpoint<'static, USB, In>, iec_bus: IecBus) -> Self {
         Self {
             state: ProtocolState::Uninitialized,
             write_ep,
             transfer: None,
+            iec_bus,
         }
     }
 
@@ -389,29 +408,61 @@ impl ProtocolHandler {
     }
 
     // Handles a new command, by creating the appropriate transfer and, in
-    // the case of a WRITE command, sending a
+    // the case of a WRITE command, sending a response if it fails
     async fn handle_new_command(&mut self, data: &[u8], len: u16) {
+        update_status(DisplayType::Active);
+
         // Parse the command and get a new Command object.  We handle errors
         // by dropping the request.
         let command = match Command::new(data, len) {
             Ok(command) => command,
             Err(_) => {
                 info!("Failed to parse command - drop it");
+                update_status(DisplayType::Error);
                 return;
             }
         };
 
+        if !command.protocol.supported() {
+            info!("Unsupported protocol: {:?}", command.protocol);
+            match command.command {
+                CommandType::Read => {
+                    // Drop the request as we aren't allow to send a status
+                }
+                CommandType::Write => {
+                    // Try to send an error - although we can't be explicit
+                    // about what error we hit as the protocol doesn't allow
+                    // it
+                    match self.write_ep.write(&Status {
+                        code: StatusCode::Error,
+                        value: command.len,
+                    }.to_bytes()).await {
+                        Ok(_) => info!("Failed to handle WRITE - sent error response"),
+                        Err(_) => info!("Failed to send WRITE error response"),
+                    }
+                }
+                _ => {
+                    // The rest are unsupported - just drop
+                }
+            };
+            update_status(DisplayType::Error);
+            return;
+        }
+
         match command.command {
-            // Create a new Write transfer.  If the creationf fails, we will
+            // Create a new Write transfer.  If the creation fails, we will
             // attempt to send a status response.
             CommandType::Write => {
                 info!("Host to WRITE {} bytes", command.len);
                 match Write::new(command.len) {
                     Ok(write) => self.transfer = Some(Transfer::Write(write)),
-                    Err(status) => match self.write_ep.write(&status.to_bytes()).await {
-                        Ok(_) => info!("Failed to handle WRITE - sent error response"),
-                        Err(_) => info!("Failed to send WRITE error response"),
-                    },
+                    Err(status) => {
+                        update_status(DisplayType::Error);
+                        match self.write_ep.write(&status.to_bytes()).await {
+                            Ok(_) => info!("Failed to handle WRITE - sent error response"),
+                            Err(_) => info!("Failed to send WRITE error response"),
+                        }
+                    }
                 }
             }
             // Create a new Read transfer.  If the creation fails, we silently
@@ -421,9 +472,14 @@ impl ProtocolHandler {
                 info!("Host to READ {} bytes", command.len);
                 match Read::new(command.len) {
                     Ok(read) => self.transfer = Some(Transfer::Read(read)),
-                    Err(_) => info!("Failed to handle READ - drop it"),
+                    Err(_) => {
+                        info!("Failed to handle READ - drop it");
+                        update_status(DisplayType::Error);
+                    }
                 }
             }
+            // The rest are unsupported - just drop
+            _ => (),
         }
     }
 
@@ -470,6 +526,7 @@ impl ProtocolHandler {
         info!("Protocol Handler - initialized");
         self.state = ProtocolState::Initialized;
         self.transfer = None
+
     }
 
     // Uninitialize the ProtocolHandler.  Any outstanding transfer is cleared.
@@ -493,6 +550,26 @@ pub enum CommandType {
 
     // The host is sending data to the device.
     Write = 0x09,
+
+    GetEoi = 23,
+    ClearEoi = 24,
+    PpRead = 25,
+    PpWrite = 26,
+    IecPoll = 27,
+    IecWait = 28,
+    IecSetRelease = 29,
+    ParburstRead = 30,
+    ParburstWrite = 31,
+    SrqburstRead = 32,
+    SrqburstWrite = 33,
+    TapMotorOn = 66,
+    TapGetVer = 67,
+    TapPrepareCapture = 68,
+    TapPrepareWrite = 69,
+    TapGetSense = 70,
+    TapWaitForStopSense = 71,
+    TapWaitForPlaySense = 72,
+    TapMotorOff = 73,
 }
 
 // Implement TryFrom for CommandType so we can parse an imcoming byte into a
@@ -504,7 +581,37 @@ impl TryFrom<u8> for CommandType {
         match value {
             0x08 => Ok(Self::Read),
             0x09 => Ok(Self::Write),
+            23 => Ok(Self::GetEoi),
+            24 => Ok(Self::ClearEoi),
+            25 => Ok(Self::PpRead),
+            26 => Ok(Self::PpWrite),
+            27 => Ok(Self::IecPoll),
+            28 => Ok(Self::IecWait),
+            29 => Ok(Self::IecSetRelease),
+            30 => Ok(Self::ParburstRead),
+            31 => Ok(Self::ParburstWrite),
+            32 => Ok(Self::SrqburstRead),
+            33 => Ok(Self::SrqburstWrite),
+            66 => Ok(Self::TapMotorOn),
+            67 => Ok(Self::TapGetVer),
+            68 => Ok(Self::TapPrepareCapture),
+            69 => Ok(Self::TapPrepareWrite),
+            70 => Ok(Self::TapGetSense),
+            71 => Ok(Self::TapWaitForStopSense),
+            72 => Ok(Self::TapWaitForPlaySense),
+            73 => Ok(Self::TapMotorOff),
             _ => Err(()),
+        }
+    }
+}
+
+impl CommandType {
+    // Whether the command is asynchronous.
+    #[allow(dead_code)]
+    fn is_async(&self) -> bool {
+        match self {
+            Self::IecWait => true,
+            _ => false,
         }
     }
 }
@@ -519,7 +626,7 @@ pub struct Command {
 
     // The protocol used by the command.  This is the second byte of the
     // command packet.
-    _protocol: Protocol,
+    protocol: ProtocolType,
 
     // The length of any data associated with the command.  This is encoded
     // in the third and fourth bytes of the command packet as a little endian
@@ -555,7 +662,7 @@ impl Command {
         };
 
         // Check the protocol is supported.
-        let _protocol = match Protocol::try_from(bytes[1]) {
+        let protocol = match ProtocolType::try_from(bytes[1]) {
             Ok(proto) => proto,
             Err(_) => return Err(()),
         };
@@ -566,26 +673,57 @@ impl Command {
         // Return the new Command object.
         Ok(Self {
             command,
-            _protocol,
+            protocol,
             len,
         })
     }
 }
 
 /// Supported Bulk command protocols.
-pub enum Protocol {
-    // The only currently supported protocol.
-    Default = 0x10,
+#[repr(u8)]
+#[derive(Clone, defmt::Format)]
+enum ProtocolType {
+    Cbm = 0x10,
+    S1 = 0x20,
+    S2 = 0x30,
+    PP = 0x40,
+    P2 = 0x50,
+    Nib = 0x60,
+    NibCommand = 0x70,
+    NibSrq = 0x80,
+    NibSrqCommand = 0x90,
+    Tap = 0xA0,
+    TapConfig = 0xB0,
 }
 
-/// Implement TryFrom for Protocol in order to parse an incoming byte into a
-/// Protocol.
-impl TryFrom<u8> for Protocol {
+impl ProtocolType {
+    /// Whether the Protocol is supported
+    fn supported(&self) -> bool {
+        match self {
+            Self::Cbm => true,
+            _ => false,
+        }
+    }
+}
+
+/// Implement TryFrom for ProtocolType in order to parse an incoming byte into
+/// a ProtocolType.
+impl TryFrom<u8> for ProtocolType {
     type Error = ();
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x10 => Ok(Self::Default),
+            0x10 => Ok(Self::Cbm),
+            0x20 => Ok(Self::S1),
+            0x30 => Ok(Self::S2),
+            0x40 => Ok(Self::PP),
+            0x50 => Ok(Self::P2),
+            0x60 => Ok(Self::Nib),
+            0x70 => Ok(Self::NibCommand),
+            0x80 => Ok(Self::NibSrq),
+            0x90 => Ok(Self::NibSrqCommand),
+            0xA0 => Ok(Self::Tap),
+            0xB0 => Ok(Self::TapConfig),
             _ => Err(()),
         }
     }
@@ -595,7 +733,7 @@ impl TryFrom<u8> for Protocol {
 #[repr(u8)]
 #[derive(Clone, defmt::Format)]
 #[allow(dead_code)]
-pub enum StatusCode {
+enum StatusCode {
     /// The device is busy.  The host may retry later.
     Busy = 0x01,
 
@@ -609,7 +747,7 @@ pub enum StatusCode {
 /// A Status object is used to return a status response to the host after
 /// certin commands have been received and handled.  It is returned as
 /// stream of bytes on the IN endpoint.
-pub struct Status {
+struct Status {
     /// The status code to return.
     code: StatusCode,
 
@@ -621,7 +759,7 @@ pub struct Status {
 impl Status {
     /// Convert the Status object into a stream of bytes to be sent on the IN
     /// endpoint.
-    pub fn to_bytes(&self) -> [u8; 3] {
+    fn to_bytes(&self) -> [u8; 3] {
         let mut bytes = [0; 3];
         bytes[0] = self.code.clone() as u8;
         bytes[1..3].copy_from_slice(&self.value.to_le_bytes());

@@ -14,9 +14,7 @@
 
 use embassy_time::Duration;
 
-// How often we aim to log from our primary loops to prove they are still
-// alive.
-pub const LOOP_LOG_INTERVAL: Duration = Duration::from_secs(5);
+/// Watchdog timers
 
 /// Watchdog timer - the watchdog resets the system if it isn't feed at
 /// least this frequently.
@@ -24,12 +22,33 @@ pub const WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 
 /// How often the runner threads aim to feed the watchdog timer so it doesn't
 /// reset the device.
-pub const WATCHDOG_FEED_TIMER: Duration = Duration::from_millis(100);
+pub const WATCHDOG_LOOP_TIMER: Duration = Duration::from_millis(100);
+
+/// How often the bulk task must feed the watchdog to prevent a reset.
+pub const BULK_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
+
+/// How often the status display must feed the watchdog to prevent a reset.
+pub const STATUS_DISPLAY_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
+
+/// Task main runner and related timers.
 
 /// Timer for the ProtocolHandler to pause between loops of its main runner.
 /// This is a low value, to ensure we apply Control driven changes quickly,
 /// and serve any outstanding data rapidly.
 pub const PROTOCOL_HANDLER_TIMER: Duration = Duration::from_millis(1);
+
+// Timer for the StatusDisplay spend on and off when blinking.
+pub const STATUS_DISPLAY_BLINK_TIMER: Duration = Duration::from_millis(100); 
+
+// Timer for the StatusDisplay to pause between doing work.  Must be less
+// than the minimum time the status LED can be on off.
+pub const STATUS_DISPLAY_TIMER: Duration = Duration::from_millis(50);
+
+// How often we aim to log from our primary loops to prove they are still
+// alive.
+pub const LOOP_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+/// USB device configuration constants.
 
 /// USB Descriptor information - what current in mA this device draws.
 pub const USB_POWER_MA: u16 = 100;
@@ -75,7 +94,9 @@ pub const USB_CLASS: u8 = 0xff;
 pub const USB_SUB_CLASS: u8 = 0;
 pub const USB_PROTOCOL: u8 = 0;
 
-/// Maximum sise of a Write command
+/// xum1541 Protocol constants
+
+/// Maximum size of a Write command
 pub const MAX_WRITE_SIZE: u16 = 32768;
 pub const MAX_WRITE_SIZE_USIZE: usize = MAX_WRITE_SIZE as usize;
 
@@ -88,12 +109,12 @@ pub const MAX_READ_SIZE_USIZE: usize = MAX_READ_SIZE as usize;
 pub const MAX_XUM_DEVINFO_SIZE: u16 = 8;
 pub const MAX_XUM_DEVINFO_SIZE_USIZE: usize = MAX_XUM_DEVINFO_SIZE as usize;
 
-/// The xum1541 firmware version the pico1541 is emulating.
-#[cfg(feature = "compatibility")]
-pub const XUM1541_FIRMWARE_VERSION: u8 = 8;
-
 /// The Init Control request response length.
 pub const INIT_CONTROL_RESPONSE_LEN: usize = 8;
 
 /// The Echo Control request response length.
 pub const ECHO_CONTROL_RESPONSE_LEN: usize = 8;
+
+/// The xum1541 firmware version the pico1541 is emulating.
+#[cfg(feature = "compatibility")]
+pub const XUM1541_FIRMWARE_VERSION: u8 = 8;

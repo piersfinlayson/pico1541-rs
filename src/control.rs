@@ -10,13 +10,22 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::Handler;
+use static_cell::StaticCell;
 
 use crate::protocol::ProtocolAction;
 use crate::types::Direction;
-use crate::PROTOCOL_ACTION;
+use crate::protocol::PROTOCOL_ACTION;
 use crate::built::{GIT_VERSION, RUSTC_VERSION, PKG_VERSION};
 use crate::constants::{MAX_XUM_DEVINFO_SIZE_USIZE, INIT_CONTROL_RESPONSE_LEN, ECHO_CONTROL_RESPONSE_LEN};
-use crate::reboot_dfu;
+use crate::watchdog::reboot_dfu;
+use crate::display::{update_status, DisplayType};
+
+// Our Control Handler handles Control requests that come in on the Control
+// endpoint, and the USB stack calls control_in() and control_out() for us
+// to handle them.  It also handles various USB device lifecycles events, such
+// as enabled, reset, address, configured, etc.  We pass ownership of this to
+// our UsbDevice object, so we don't need anything other than a StaticCell.
+static CONTROL: StaticCell<Control> = StaticCell::new();
 
 /// Handle USB events.
 pub struct Control {
@@ -26,6 +35,7 @@ pub struct Control {
 }
 
 // Error type used internally to device how to respond to a Control message.
+
 enum ControlError {
     // Ignore means we return None from the control handler function.
     Ignore,
@@ -40,8 +50,11 @@ impl Handler for Control {
         match enabled {
             true => {
                 info!("USB device enabled");
-            },
-            false => info!("USB device disabled"),
+            }
+            false => {
+                info!("USB device disabled");
+                update_status(DisplayType::Init);
+            }
         }
         self.set_action(ProtocolAction::Uninitialize);
     }
@@ -71,6 +84,7 @@ impl Handler for Control {
         match suspended {
             true => {
                 info!("USB device suspended");
+                update_status(DisplayType::Init);
             }
             false => {
                 info!("USB device resumed");
@@ -89,7 +103,11 @@ impl Handler for Control {
         info!("Got control_out, request={}, buf={:a}", req, buf);
 
         // Get the request type, and check for errors
-        let request = match self.check_request(req, Direction::Out) {
+        let result = self.check_request(req, Direction::Out);
+        if let Err(_) = &result {
+            update_status(DisplayType::Error);
+        }
+        let request = match result {
             Err(ControlError::Ignore) => return None,
             Err(ControlError::Invalid) => return Some(OutResponse::Rejected),
             Ok(r) => r,
@@ -108,7 +126,11 @@ impl Handler for Control {
         info!("Got control_in, request={}", req);
 
         // Get the request type, and check for errors
-        let request = match self.check_request(req, Direction::In) {
+        let result = self.check_request(req, Direction::In);
+        if let Err(_) = &result {
+            update_status(DisplayType::Error);
+        }
+        let request = match result {
             Err(ControlError::Ignore) => return None,
             Err(ControlError::Invalid) => return Some(InResponse::Rejected),
             Ok(r) => r,
@@ -126,8 +148,9 @@ impl Handler for Control {
 // Our own Control functions to help deal with the USB control requests.
 impl Control {
     // Create a new instance of this control handler.
-    pub fn new(if_num: InterfaceNumber) -> Self {
-        Self { if_num }
+    pub fn create_static(if_num: InterfaceNumber) -> &'static mut Self {
+        let control = Self { if_num };
+        CONTROL.init(control)
     }
 
     // Check the request is valid and supported.
@@ -181,6 +204,7 @@ impl Control {
             ControlRequest::Shutdown => {
                 // Overwrite any existing action as this takes precedence
                 self.set_action(ProtocolAction::Uninitialize);
+                update_status(DisplayType::Ready);
             }
             ControlRequest::EnterBootloader => {
                 info!("Entering DFU bootloader");
@@ -217,6 +241,7 @@ impl Control {
                 // Overwrite any existing action as initialize will also
                 // deinitialize first (and also reset if required)
                 self.set_action(ProtocolAction::Initialize);
+                update_status(DisplayType::Active);
 
                 // Build the response
                 buf[0] = 0x08;

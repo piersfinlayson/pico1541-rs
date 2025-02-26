@@ -5,7 +5,18 @@
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
 use embassy_rp::peripherals::{FLASH, DMA_CH0};
+use static_cell::StaticCell;
+use heapless::String;
+
 use crate::constants::{self, MAX_SERIAL_STRING_LEN};
+
+// Create a static String to store the serial number in to be consumed by the
+// USB stack creation.
+pub static USB_SERIAL: StaticCell<String::<MAX_SERIAL_STRING_LEN>> = StaticCell::new();
+
+// Create a static String to store the serial number in to be consumed by the
+// built logging function.
+static LOG_SERIAL: StaticCell<String::<MAX_SERIAL_STRING_LEN>> = StaticCell::new();
 
 #[cfg(feature = "compatibility")]
 use core::fmt::Write;
@@ -76,13 +87,12 @@ pub const IN_EP: u8 = constants::PICO1541_IN_EP;
 /// let serial = get_serial(&mut peripherals, &mut byte_buf, &mut str_buf);
 /// ```
 #[cfg(feature = "compatibility")]
-pub fn get_serial<'a>(
+pub fn get_serial(
     _flash: &mut FLASH,
     _dma_ch0: &mut DMA_CH0,
-    serial: &'a mut heapless::String<MAX_SERIAL_STRING_LEN>
-) {
-    // Clear any previous content
-    serial.clear();
+) -> (&'static mut String<MAX_SERIAL_STRING_LEN>, &'static mut String<MAX_SERIAL_STRING_LEN>) {
+    // Create a temporary stack String to store the serial number in.
+    let mut serial = String::<MAX_SERIAL_STRING_LEN>::new();
 
     // Fill the buffer with the constant value
     match write!(serial, "{}", constants::XUM1541_SERIAL) {
@@ -97,15 +107,17 @@ pub fn get_serial<'a>(
             }
         }
     }
+
+    // Store the serial number in the statics
+    (USB_SERIAL.init(serial.clone()), LOG_SERIAL.init(serial))
 }
 #[cfg(feature = "extended")]
-pub fn get_serial<'a>(
+pub fn get_serial(
     flash: &mut FLASH,
     dma_ch0: &mut DMA_CH0,
-    serial: &'a mut heapless::String<MAX_SERIAL_STRING_LEN>
-) {
-    // Clear any previous content
-    serial.clear();
+) -> (&'static mut String<MAX_SERIAL_STRING_LEN>, &'static mut String<MAX_SERIAL_STRING_LEN>) {
+    // Create a temporary stack String to store the serial number in.
+    let mut serial = String::<MAX_SERIAL_STRING_LEN>::new();
 
     // Get the Pico serial number
     const FLASH_SIZE: usize = 2 * 1024 * 1024;
@@ -140,4 +152,7 @@ pub fn get_serial<'a>(
             }
         }
     }
+
+    // Store the serial number in the statics
+    (USB_SERIAL.init(serial.clone()), LOG_SERIAL.init(serial))
 }
