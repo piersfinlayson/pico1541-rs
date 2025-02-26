@@ -1,5 +1,5 @@
 //! This module contains constants for the embassy-rs Vendor Example.
-//! 
+//!
 //! It has multiple versions of constants that are used by different
 //! configurations, such as usb product string.  The correct version is
 //! selected by the dev_info module.
@@ -14,7 +14,9 @@
 
 use embassy_time::Duration;
 
-/// Watchdog timers
+//
+// Watchdog timers
+//
 
 /// Watchdog timer - the watchdog resets the system if it isn't feed at
 /// least this frequently.
@@ -30,7 +32,12 @@ pub const BULK_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 /// How often the status display must feed the watchdog to prevent a reset.
 pub const STATUS_DISPLAY_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 
-/// Task main runner and related timers.
+/// How often core 1 must feed the watchdog to prevent a reset.
+pub const CORE1_WATCHDOG_TIMER: Duration = Duration::from_secs(10);
+
+//
+// Task main runner and related timers.
+//
 
 /// Timer for the ProtocolHandler to pause between loops of its main runner.
 /// This is a low value, to ensure we apply Control driven changes quickly,
@@ -38,7 +45,7 @@ pub const STATUS_DISPLAY_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 pub const PROTOCOL_HANDLER_TIMER: Duration = Duration::from_millis(1);
 
 // Timer for the StatusDisplay spend on and off when blinking.
-pub const STATUS_DISPLAY_BLINK_TIMER: Duration = Duration::from_millis(100); 
+pub const STATUS_DISPLAY_BLINK_TIMER: Duration = Duration::from_millis(100);
 
 // Timer for the StatusDisplay to pause between doing work.  Must be less
 // than the minimum time the status LED can be on off.
@@ -48,7 +55,9 @@ pub const STATUS_DISPLAY_TIMER: Duration = Duration::from_millis(50);
 // alive.
 pub const LOOP_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
-/// USB device configuration constants.
+//
+// USB device configuration constants.
+//
 
 /// USB Descriptor information - what current in mA this device draws.
 pub const USB_POWER_MA: u16 = 100;
@@ -94,7 +103,9 @@ pub const USB_CLASS: u8 = 0xff;
 pub const USB_SUB_CLASS: u8 = 0;
 pub const USB_PROTOCOL: u8 = 0;
 
-/// xum1541 Protocol constants
+//
+// xum1541 Protocol constants
+//
 
 /// Maximum size of a Write command
 pub const MAX_WRITE_SIZE: u16 = 32768;
@@ -118,3 +129,10 @@ pub const ECHO_CONTROL_RESPONSE_LEN: usize = 8;
 /// The xum1541 firmware version the pico1541 is emulating.
 #[cfg(feature = "compatibility")]
 pub const XUM1541_FIRMWARE_VERSION: u8 = 8;
+
+//
+// Other constants
+//
+
+/// The size (in bytes) of the stack for core 1.
+pub const CORE1_STACK_SIZE: usize = 4096;

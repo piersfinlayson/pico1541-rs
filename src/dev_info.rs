@@ -4,19 +4,19 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use embassy_rp::peripherals::{FLASH, DMA_CH0};
-use static_cell::StaticCell;
+use embassy_rp::peripherals::{DMA_CH0, FLASH};
 use heapless::String;
+use static_cell::StaticCell;
 
 use crate::constants::{self, MAX_SERIAL_STRING_LEN};
 
 // Create a static String to store the serial number in to be consumed by the
 // USB stack creation.
-pub static USB_SERIAL: StaticCell<String::<MAX_SERIAL_STRING_LEN>> = StaticCell::new();
+pub static USB_SERIAL: StaticCell<String<MAX_SERIAL_STRING_LEN>> = StaticCell::new();
 
 // Create a static String to store the serial number in to be consumed by the
 // built logging function.
-static LOG_SERIAL: StaticCell<String::<MAX_SERIAL_STRING_LEN>> = StaticCell::new();
+static LOG_SERIAL: StaticCell<String<MAX_SERIAL_STRING_LEN>> = StaticCell::new();
 
 #[cfg(feature = "compatibility")]
 use core::fmt::Write;
@@ -90,13 +90,16 @@ pub const IN_EP: u8 = constants::PICO1541_IN_EP;
 pub fn get_serial(
     _flash: &mut FLASH,
     _dma_ch0: &mut DMA_CH0,
-) -> (&'static mut String<MAX_SERIAL_STRING_LEN>, &'static mut String<MAX_SERIAL_STRING_LEN>) {
+) -> (
+    &'static mut String<MAX_SERIAL_STRING_LEN>,
+    &'static mut String<MAX_SERIAL_STRING_LEN>,
+) {
     // Create a temporary stack String to store the serial number in.
     let mut serial = String::<MAX_SERIAL_STRING_LEN>::new();
 
     // Fill the buffer with the constant value
     match write!(serial, "{}", constants::XUM1541_SERIAL) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(_) => {
             // Handle error - fallback to manual char-by-char copying
             for c in constants::XUM1541_SERIAL.chars() {
@@ -115,7 +118,10 @@ pub fn get_serial(
 pub fn get_serial(
     flash: &mut FLASH,
     dma_ch0: &mut DMA_CH0,
-) -> (&'static mut String<MAX_SERIAL_STRING_LEN>, &'static mut String<MAX_SERIAL_STRING_LEN>) {
+) -> (
+    &'static mut String<MAX_SERIAL_STRING_LEN>,
+    &'static mut String<MAX_SERIAL_STRING_LEN>,
+) {
     // Create a temporary stack String to store the serial number in.
     let mut serial = String::<MAX_SERIAL_STRING_LEN>::new();
 
@@ -125,25 +131,25 @@ pub fn get_serial(
     let mut flash = embassy_rp::flash::Flash::<_, Async, FLASH_SIZE>::new(flash, dma_ch0);
 
     // If actually getting the unique flash ID fails, the serial number will
-    // be all zeroes. 
+    // be all zeroes.
     let _ = flash.blocking_unique_id(&mut byte_buf);
-    
+
     // Clear any previous content
     serial.clear();
 
     // Format only the last 8 bytes (or fewer) as hex string
-    let bytes_to_format = if byte_buf.len() > (MAX_SERIAL_STRING_LEN/2) {
-        &byte_buf[byte_buf.len() - (MAX_SERIAL_STRING_LEN/2)..]
+    let bytes_to_format = if byte_buf.len() > (MAX_SERIAL_STRING_LEN / 2) {
+        &byte_buf[byte_buf.len() - (MAX_SERIAL_STRING_LEN / 2)..]
     } else {
         &byte_buf[..]
     };
-    
+
     // Format the bytes as hex string
     for b in bytes_to_format.iter() {
         // Using defmt's formatting or manual hex formatting
         use core::fmt::Write;
         match write!(serial, "{:02x}", b) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(_) => {
                 // Fallback to manual hex formatting if write! fails
                 let hex_chars = b"0123456789abcdef";

@@ -9,19 +9,19 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 
+use core::cell::RefCell;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::Timer;
 use embassy_usb::driver::EndpointIn;
-use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
-use core::cell::RefCell;
 use heapless::Vec;
 
 use crate::constants::{
     MAX_EP_PACKET_SIZE, MAX_READ_SIZE, MAX_WRITE_SIZE, MAX_WRITE_SIZE_USIZE, PROTOCOL_HANDLER_TIMER,
 };
+use crate::display::{update_status, DisplayType};
 use crate::iec::IecBus;
-use crate::display::{DisplayType, update_status};
 
 // The PROTOCOL_ACTION static is a Mutex that is used to allow communication
 // between the Control Handler and the Protocol Handler, so the Control
@@ -218,7 +218,6 @@ impl Read {
 /// It is initialized, uninitialized and reset via control requests, and these
 /// are signalled via ProtocolAction.
 #[allow(dead_code)]
-
 pub struct ProtocolHandler {
     // The state of the ProtocolHandler.
     state: ProtocolState,
@@ -433,10 +432,17 @@ impl ProtocolHandler {
                     // Try to send an error - although we can't be explicit
                     // about what error we hit as the protocol doesn't allow
                     // it
-                    match self.write_ep.write(&Status {
-                        code: StatusCode::Error,
-                        value: command.len,
-                    }.to_bytes()).await {
+                    match self
+                        .write_ep
+                        .write(
+                            &Status {
+                                code: StatusCode::Error,
+                                value: command.len,
+                            }
+                            .to_bytes(),
+                        )
+                        .await
+                    {
                         Ok(_) => info!("Failed to handle WRITE - sent error response"),
                         Err(_) => info!("Failed to send WRITE error response"),
                     }
@@ -526,7 +532,6 @@ impl ProtocolHandler {
         info!("Protocol Handler - initialized");
         self.state = ProtocolState::Initialized;
         self.transfer = None
-
     }
 
     // Uninitialize the ProtocolHandler.  Any outstanding transfer is cleared.
@@ -609,10 +614,7 @@ impl CommandType {
     // Whether the command is asynchronous.
     #[allow(dead_code)]
     fn is_async(&self) -> bool {
-        match self {
-            Self::IecWait => true,
-            _ => false,
-        }
+        matches!(self, Self::IecWait)
     }
 }
 
@@ -699,10 +701,7 @@ enum ProtocolType {
 impl ProtocolType {
     /// Whether the Protocol is supported
     fn supported(&self) -> bool {
-        match self {
-            Self::Cbm => true,
-            _ => false,
-        }
+        matches!(self, Self::Cbm)
     }
 }
 

@@ -17,12 +17,12 @@ use embassy_usb::driver::{Endpoint as DriverEndpoint, EndpointOut};
 use static_cell::StaticCell;
 
 use crate::constants::{
-    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE, MAX_WRITE_SIZE_USIZE, BULK_WATCHDOG_TIMER,
+    BULK_WATCHDOG_TIMER, LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE, MAX_WRITE_SIZE_USIZE,
 };
+use crate::display::{update_status, DisplayType};
+use crate::iec::IecBus;
 use crate::protocol::ProtocolHandler;
 use crate::watchdog::{feed_watchdog, reboot_normal, TaskId};
-use crate::iec::IecBus;
-use crate::display::{update_status, DisplayType};
 
 // The BULK static contains our Bulk data handling object, which  a
 // Protocol Handler object.
@@ -36,7 +36,7 @@ use crate::display::{update_status, DisplayType};
 // commands from the host.
 //
 // Ownership is passed to the USB task, so nothing other than a StaticCell is
-// required. 
+// required.
 pub static BULK: StaticCell<Bulk> = StaticCell::new();
 
 /// The Bulk object contains the runner which handles bulk transfers on the
@@ -62,7 +62,11 @@ impl Bulk {
     ///
     /// # Returns
     /// `Self`
-    pub fn new(out_ep: Endpoint<'static, USB, Out>, in_ep: Endpoint<'static, USB, In>, iec_bus: IecBus) -> Self {
+    pub fn new(
+        out_ep: Endpoint<'static, USB, Out>,
+        in_ep: Endpoint<'static, USB, In>,
+        iec_bus: IecBus,
+    ) -> Self {
         Self {
             read_ep: out_ep,
             protocol: ProtocolHandler::new(in_ep, iec_bus),
@@ -162,4 +166,4 @@ impl Bulk {
 #[embassy_executor::task]
 pub async fn bulk_task(bulk: &'static mut Bulk) -> ! {
     bulk.run().await;
-} 
+}

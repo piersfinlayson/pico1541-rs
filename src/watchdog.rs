@@ -5,17 +5,17 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+use core::cell::RefCell;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
+use embassy_rp::pac::WATCHDOG as Pac_Watchdog;
 use embassy_rp::peripherals::WATCHDOG as P_RpWatchdog;
 use embassy_rp::watchdog::Watchdog as RpWatchdog;
-use embassy_rp::pac::WATCHDOG as Pac_Watchdog;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
-use core::cell::RefCell;
-use embassy_time::{Timer, Instant, Duration};
+use embassy_time::{Duration, Instant, Timer};
 use rp2040_rom::ROM;
 
-use crate::constants::{WATCHDOG_TIMER, WATCHDOG_LOOP_TIMER};
+use crate::constants::{WATCHDOG_LOOP_TIMER, WATCHDOG_TIMER};
 
 // We use the WATCHDOG static to store the Watchdog object, so we can feed it
 // from all of our tasks and objects.  This is shared and mutable.
@@ -42,14 +42,14 @@ impl Watchdog {
         let watchdog = Pac_Watchdog;
         let reason = watchdog.reason().read();
         let rr_str = if reason.force() {
-            "forced";
+            "forced"
         } else if reason.timer() {
-            "watchdog timer";
+            "watchdog timer"
         } else {
-            "unknown";
+            "unknown"
         };
         info!("Last reset reason: {}", rr_str);
-        
+
         // Set up the hardware watchdog
         let hw_watchdog = RpWatchdog::new(p_watchdog);
 
@@ -60,15 +60,14 @@ impl Watchdog {
         };
 
         // Store our watchdog object in the static
-        WATCHDOG
-            .lock(|w| {
-                *w.borrow_mut() = Some(watchdog);
-            });
+        WATCHDOG.lock(|w| {
+            *w.borrow_mut() = Some(watchdog);
+        });
     }
 
     /// Registers a task with this watchdog.
     pub fn register_task(&mut self, task: Task) {
-        let task_id = task.id.clone();
+        let task_id = task.id;
         let idx = task_id as usize;
         if idx < TaskId::Num as usize {
             self.tasks[idx] = Some(task);
@@ -78,7 +77,7 @@ impl Watchdog {
 
     /// Feed the watchdog from a specific task
     pub fn feed(&mut self, task_id: TaskId) {
-        let idx = task_id.clone() as usize;
+        let idx = task_id as usize;
         if idx < TaskId::Num as usize {
             if let Some(task) = &mut self.tasks[idx] {
                 task.feed();
@@ -90,10 +89,8 @@ impl Watchdog {
 
     pub fn start(&mut self) {
         // Feed all of the registered tasks
-        for task in self.tasks.iter_mut() {
-            if let Some(task) = task {
-                task.feed();
-            }
+        for task in self.tasks.iter_mut().flatten() {
+            task.feed();
         }
 
         // Start the hardware watchdog
@@ -126,8 +123,10 @@ pub enum TaskId {
     /// The StatusDisplay
     Display,
 
+    /// Core 1 task
+    Core1,
+
     // Add any other tasks here
-    
     /// The is the number of tasks which are policed by the watchdog.
     Num,
 }
@@ -167,7 +166,7 @@ impl Task {
 }
 
 /// The watchdog runner task.  This periodically checks that all tasks have
-/// feed the watchdog in the appropriate timeframe, and if not causes a reset. 
+/// feed the watchdog in the appropriate timeframe, and if not causes a reset.
 #[embassy_executor::task]
 pub async fn watchdog_task() -> ! {
     // Start the watchdog
@@ -188,12 +187,10 @@ pub async fn watchdog_task() -> ! {
 
             // See if any tasks have starved us
             let mut starved = false;
-            for task in watchdog.tasks.iter() {
-                if let Some(task) = task {
-                    if task.starved() {
-                        error!("Task {:?} has starved the watchdog", task.id);
-                        starved = true;
-                    }
+            for task in watchdog.tasks.iter().flatten() {
+                if task.starved() {
+                    error!("Task {:?} has starved the watchdog", task.id);
+                    starved = true;
                 }
             }
 
@@ -251,4 +248,4 @@ pub fn register_task(task_id: TaskId, max_duration: Duration) {
             .expect("Watchdog doesn't exist - can't register task")
             .register_task(Task::new(task_id, max_duration));
     });
-} 
+}

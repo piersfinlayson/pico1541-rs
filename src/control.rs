@@ -12,13 +12,15 @@ use embassy_usb::types::InterfaceNumber;
 use embassy_usb::Handler;
 use static_cell::StaticCell;
 
-use crate::protocol::ProtocolAction;
-use crate::types::Direction;
-use crate::protocol::PROTOCOL_ACTION;
-use crate::built::{GIT_VERSION, RUSTC_VERSION, PKG_VERSION};
-use crate::constants::{MAX_XUM_DEVINFO_SIZE_USIZE, INIT_CONTROL_RESPONSE_LEN, ECHO_CONTROL_RESPONSE_LEN};
-use crate::watchdog::reboot_dfu;
+use crate::built::{GIT_VERSION, PKG_VERSION, RUSTC_VERSION};
+use crate::constants::{
+    ECHO_CONTROL_RESPONSE_LEN, INIT_CONTROL_RESPONSE_LEN, MAX_XUM_DEVINFO_SIZE_USIZE,
+};
 use crate::display::{update_status, DisplayType};
+use crate::protocol::ProtocolAction;
+use crate::protocol::PROTOCOL_ACTION;
+use crate::types::Direction;
+use crate::watchdog::reboot_dfu;
 
 // Our Control Handler handles Control requests that come in on the Control
 // endpoint, and the USB stack calls control_in() and control_out() for us
@@ -104,7 +106,7 @@ impl Handler for Control {
 
         // Get the request type, and check for errors
         let result = self.check_request(req, Direction::Out);
-        if let Err(_) = &result {
+        if result.is_err() {
             update_status(DisplayType::Error);
         }
         let request = match result {
@@ -127,7 +129,7 @@ impl Handler for Control {
 
         // Get the request type, and check for errors
         let result = self.check_request(req, Direction::In);
-        if let Err(_) = &result {
+        if result.is_err() {
             update_status(DisplayType::Error);
         }
         let request = match result {
@@ -258,14 +260,11 @@ impl Control {
                 } else {
                     buf[..8].copy_from_slice(b"unknown\0");
                 }
-            },
+            }
             ControlRequest::RustcVer => {
                 // Extract the version number (e.g. 1.83.0) from the full rustc
                 // version string
-                let version = RUSTC_VERSION
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("unknown");
+                let version = RUSTC_VERSION.split_whitespace().nth(1).unwrap_or("unknown");
 
                 // Copy the version string to the buffer with null termination
                 let copy_len = core::cmp::min(len - 1, version.len());
@@ -299,21 +298,21 @@ impl Control {
             match action {
                 // Initialize takes precedence over any other action
                 ProtocolAction::Initialize => *a.borrow_mut() = Some(ProtocolAction::Initialize),
-                
+
                 // Unitialize takes precedence over any other action
-                ProtocolAction::Uninitialize => *a.borrow_mut() = Some(ProtocolAction::Uninitialize),
+                ProtocolAction::Uninitialize => {
+                    *a.borrow_mut() = Some(ProtocolAction::Uninitialize)
+                }
 
                 // Only set the action to reset if there's no action
                 // outstanding
-                ProtocolAction::Reset => {
-                    match current_action {
-                        None => *a.borrow_mut() = Some(ProtocolAction::Reset),
-                        Some(a) => info!(
-                            "Reset request received - ignoring as oustanding action: {}",
-                            a
-                        ),
-                    }
-                }
+                ProtocolAction::Reset => match current_action {
+                    None => *a.borrow_mut() = Some(ProtocolAction::Reset),
+                    Some(a) => info!(
+                        "Reset request received - ignoring as oustanding action: {}",
+                        a
+                    ),
+                },
             }
         });
     }

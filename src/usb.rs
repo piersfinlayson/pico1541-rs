@@ -7,15 +7,17 @@
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver as RpUsbDriver, Endpoint, In, InterruptHandler, Out};
+use embassy_usb::descriptor::{SynchronizationType, UsageType};
 use embassy_usb::driver::{Driver, Endpoint as DriverEndpoint, EndpointType};
 use embassy_usb::{Builder, Config, UsbDevice};
-use embassy_usb::descriptor::{SynchronizationType, UsageType};
-use static_cell::{StaticCell, ConstStaticCell};
+use static_cell::{ConstStaticCell, StaticCell};
 
-use crate::control::Control;
-use crate::constants::{MAX_EP_PACKET_SIZE, MAX_PACKET_SIZE_0, USB_CLASS, USB_POWER_MA, USB_PROTOCOL, USB_SUB_CLASS, };
-use crate::dev_info::{IN_EP, OUT_EP, MANUFACTURER, PRODUCT, PRODUCT_ID, VENDOR_ID};
 use crate::bulk::{Bulk, BULK};
+use crate::constants::{
+    MAX_EP_PACKET_SIZE, MAX_PACKET_SIZE_0, USB_CLASS, USB_POWER_MA, USB_PROTOCOL, USB_SUB_CLASS,
+};
+use crate::control::Control;
+use crate::dev_info::{IN_EP, MANUFACTURER, OUT_EP, PRODUCT, PRODUCT_ID, VENDOR_ID};
 use crate::iec::IecBus;
 
 // Bind the hardware USB interrupt to the USB stack.  Interrupts are the
@@ -44,18 +46,25 @@ static MSOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 static CONTROL_BUF: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 
 /// Used to create the embassy USB stack.
-pub struct UsbStack{}
+pub struct UsbStack {}
 
 impl UsbStack {
     /// Creates the USB stack.
-    /// 
+    ///
     /// # Arguments
     /// - `usb` - The USB peripheral
     /// - `iec_bus` - The IEC bus object
-    /// 
+    ///
     /// # Returns
     /// (`USB, `Bulk`)
-    pub fn create_static(p_usb: USB, serial: &'static str, iec_bus: IecBus) -> (&'static mut UsbDevice<'static, embassy_rp::usb::Driver<'static, USB>>, &'static mut Bulk) {
+    pub fn create_static(
+        p_usb: USB,
+        serial: &'static str,
+        iec_bus: IecBus,
+    ) -> (
+        &'static mut UsbDevice<'static, embassy_rp::usb::Driver<'static, USB>>,
+        &'static mut Bulk,
+    ) {
         // Create a new USB device
         let mut driver = RpUsbDriver::new(p_usb, Irqs);
 
@@ -200,12 +209,12 @@ impl UsbStack {
         // Return the endpoints.
         (ep_in, ep_out)
     }
-
-
 }
 
 // Method to run the USB stack.
 #[embassy_executor::task]
-pub async fn usb_task(usb: &'static mut UsbDevice<'static, embassy_rp::usb::Driver<'static, USB>>) -> ! {
+pub async fn usb_task(
+    usb: &'static mut UsbDevice<'static, embassy_rp::usb::Driver<'static, USB>>,
+) -> ! {
     usb.run().await
 }
