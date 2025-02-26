@@ -11,8 +11,10 @@ use embassy_rp::gpio::{Level, Output, Pin};
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::{Duration, Instant, Timer};
 
-use crate::constants::{STATUS_DISPLAY_BLINK_TIMER, STATUS_DISPLAY_TIMER};
-use crate::watchdog::{feed_watchdog, TaskId};
+use crate::constants::{
+    STATUS_DISPLAY_BLINK_TIMER, STATUS_DISPLAY_TIMER, STATUS_DISPLAY_WATCHDOG_TIMER,
+};
+use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
 // The STATUS_DISPLAY static is used to store the StatusDisplay object, which
 // is used to display the status of the device on the LED.  It is shared
@@ -174,6 +176,9 @@ impl StatusDisplay {
 /// This is an embassy executor task that periodically calls do_work()
 #[embassy_executor::task]
 pub async fn status_task() -> ! {
+    // Register with the watchdog
+    register_task(TaskId::Display, STATUS_DISPLAY_WATCHDOG_TIMER);
+
     loop {
         // Feed the watchdog
         feed_watchdog(TaskId::Display);

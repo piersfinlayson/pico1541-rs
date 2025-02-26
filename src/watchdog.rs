@@ -75,6 +75,17 @@ impl Watchdog {
         info!("Watchdog - registered task: {}", task_id);
     }
 
+    /// De-registers a task with this watchdog.  The watchdog will not require
+    /// that task to feed it until it is re-registered.
+    #[allow(dead_code)]
+    pub fn deregister_task(&mut self, task_id: TaskId) {
+        let idx = task_id as usize;
+        if idx < TaskId::Num as usize {
+            self.tasks[idx] = None;
+        }
+        info!("Watchdog - deregistered task: {}", task_id);
+    }
+
     /// Feed the watchdog from a specific task
     pub fn feed(&mut self, task_id: TaskId) {
         let idx = task_id as usize;
@@ -123,10 +134,9 @@ pub enum TaskId {
     /// The StatusDisplay
     Display,
 
-    /// Core 1 task
-    Core1,
-
     // Add any other tasks here
+    // ...
+    //
     /// The is the number of tasks which are policed by the watchdog.
     Num,
 }
@@ -214,6 +224,8 @@ pub async fn watchdog_task() -> ! {
 /// Called to perform a standard device reboot.  (Normally as in not entering
 /// BOOTSEL/DFU mode.)
 pub fn reboot_normal() -> ! {
+    info!("Rebooting");
+
     // Try rebooting using the watchdog
     WATCHDOG.lock(|w| {
         w.borrow_mut()

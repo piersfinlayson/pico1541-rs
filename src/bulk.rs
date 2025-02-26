@@ -22,7 +22,7 @@ use crate::constants::{
 use crate::display::{update_status, DisplayType};
 use crate::iec::IecBus;
 use crate::protocol::ProtocolHandler;
-use crate::watchdog::{feed_watchdog, reboot_normal, TaskId};
+use crate::watchdog::{feed_watchdog, reboot_normal, register_task, TaskId};
 
 // The BULK static contains our Bulk data handling object, which  a
 // Protocol Handler object.
@@ -51,6 +51,7 @@ pub static BULK: StaticCell<Bulk> = StaticCell::new();
 pub struct Bulk {
     read_ep: Endpoint<'static, USB, Out>,
     protocol: ProtocolHandler,
+    core: u32,
 }
 
 impl Bulk {
@@ -70,6 +71,7 @@ impl Bulk {
         Self {
             read_ep: out_ep,
             protocol: ProtocolHandler::new(in_ep, iec_bus),
+            core: 0,
         }
     }
 
@@ -78,11 +80,19 @@ impl Bulk {
     /// * reading in any data
     /// * handling it (echoing it back or some other handling)
     pub async fn run(&mut self) -> ! {
+        // Register this task with the watchdog.
+        register_task(TaskId::Bulk, BULK_WATCHDOG_TIMER);
+
+        // Read the core ID.  Tasks are allocated to cores at compile time with
+        // embassy, so we only need to do this once.
+        self.core = embassy_rp::pac::SIO.cpuid().read();
+
+        // Set up a variable to allow us to log periocically.
         let mut next_log_instant = Instant::now();
         loop {
             let now = Instant::now();
             if now >= next_log_instant {
-                info!("Bulk loop");
+                info!("Core{}: Bulk loop", self.core);
                 next_log_instant = now + LOOP_LOG_INTERVAL;
             }
 
@@ -107,7 +117,7 @@ impl Bulk {
                 loop {
                     let now = Instant::now();
                     if now >= next_log_instant {
-                        info!("Bulk loop");
+                        info!("Core{}: Bulk loop", self.core);
                         next_log_instant = now + LOOP_LOG_INTERVAL;
                     }
 
@@ -136,6 +146,8 @@ impl Bulk {
                                 size
                             );
                         }
+
+                        info!("Successfully handled {} bytes from OUT endpoint", size);
 
                         // Try to read more data
                         continue;

@@ -33,6 +33,18 @@ use crate::iec::IecBus;
 pub static PROTOCOL_ACTION: Mutex<CriticalSectionRawMutex, RefCell<Option<ProtocolAction>>> =
     Mutex::new(RefCell::new(Some(ProtocolAction::Uninitialize)));
 
+// We need a static for the write data we may be asked to read in.  The
+// maximum size of a data transfer supported by the xum1541 is 32768 bytes,
+// which is the MAX_WRITE_SIZE_USIZE.  So, we can't possibly allocate this on
+// the stack, or even on the heap, so we have a static, which should be OK as
+// the Pico has 264KB RAM.  However, we need to be careful about accessing
+// this.
+//
+// TODO - should probably move to using much, much smaller buffers and then
+// it's up to the Protocol handling code to read it out of the buffer in a
+// timely enough fashion.
+static mut WRITE_DATA: Vec<u8, MAX_WRITE_SIZE_USIZE> = Vec::new();
+
 // ProtocolState is used by ProtocolHandler to store its state.
 #[derive(PartialEq)]
 enum ProtocolState {
@@ -103,7 +115,7 @@ struct Write {
     // So long as Write is within Transfer, which is within ProtocolHandler,
     // which is within Bulk, and so long as Bulk is in a StaticCell, then
     // this Vec is allocated statically.
-    data: Vec<u8, MAX_WRITE_SIZE_USIZE>,
+    data: &'static mut Vec<u8, MAX_WRITE_SIZE_USIZE>,
 }
 
 impl Write {
@@ -111,11 +123,19 @@ impl Write {
     // possible incoming data.
     fn new(expected_len: u16) -> Result<Self, Status> {
         if expected_len < MAX_WRITE_SIZE {
-            Ok(Self {
-                expected_len,
-                received_bytes: 0,
-                data: Vec::new(),
-            })
+            // This should be safe, as Bulk and Protocol are the only objects
+            // that access data, and they run within a single thread, on core
+            // 1.  Nothing else can access it.  The only functionality that
+            // operates in parallel, on core 1, is an attempt to read data
+            // from USB into a separate buffer.
+            unsafe {
+                #[allow(static_mut_refs)]
+                Ok(Self {
+                    expected_len,
+                    received_bytes: 0,
+                    data: &mut WRITE_DATA,
+                })
+            }
         } else {
             info!(
                 "Received WRITE command for too many bytes: {}",

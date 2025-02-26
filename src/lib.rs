@@ -25,13 +25,13 @@ mod built;
 mod bulk;
 mod constants;
 mod control;
-mod core1;
 mod dev_info;
 mod display;
 mod driver;
 mod gpio;
 mod iec;
 mod protocol;
+mod task;
 mod types;
 mod usb;
 mod watchdog;
@@ -41,16 +41,13 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 
-use bulk::bulk_task;
-use constants::{
-    BULK_WATCHDOG_TIMER, CORE1_WATCHDOG_TIMER, LOOP_LOG_INTERVAL, STATUS_DISPLAY_WATCHDOG_TIMER,
-};
-use core1::spawn_core1;
+use constants::LOOP_LOG_INTERVAL;
 use dev_info::get_serial;
 use display::status_task;
 use gpio::Gpio;
+use task::{core0_spawn_or_reboot, core1_spawn};
 use usb::{usb_task, UsbStack};
-use watchdog::{reboot_normal, register_task, watchdog_task, TaskId, Watchdog};
+use watchdog::{watchdog_task, Watchdog};
 
 // Statics
 //
@@ -141,6 +138,10 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // Create the objects that need GPIOs.  We do this all at once so there is
     // a single place in the code that allocates GPIOs - to make it easier to
     // see what is being used.
+    //
+    // While not visible here, the first object which is created is the
+    // StatusDisplay object, and it turns on the status LED (indicating the
+    // device is in the initialisation phase).
     let (iec_bus,) = Gpio::create_pin_objects(
         pin_0, pin_1, pin_2, pin_3, pin_4, pin_5, pin_6, pin_7, pin_8, pin_9, pin_10, pin_11,
         pin_12, pin_13, pin_14, pin_15, pin_16, pin_17, pin_18, pin_19, pin_20, pin_21, pin_22,
@@ -156,39 +157,30 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // once that's happened, in order to feed it).
     Watchdog::create_static(p_watchdog);
 
-    // Spawn the Status Display, USB and Bulk tasks.  We do this before we
-    // start the watchdog, as we want to make sure the tasks are running
-    // and reading to feed it.  (Feeding can happen before the watchdog is
-    // started);
-    spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
-    spawn_or_reboot(spawner.spawn(usb_task(usb)), "USB");
-    spawn_or_reboot(spawner.spawn(bulk_task(bulk)), "Bulk");
+    // Spawn the Status Display and USB tasks on core 0.
+    //
+    // We do this before we start the watchdog, as we want to make sure the
+    // tasks are running and reading to feed it.  Feeding can happen before
+    // the watchdog is started, and registers can happen before or after it
+    // is started.  The tasks themselves register with the watchdog.  This is
+    // to allow them to deregister should that become necessary.
+    //
+    // See [`task.rs`] for an explanation of the multi-core strategy.
+    core0_spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
+    core0_spawn_or_reboot(spawner.spawn(usb_task(usb)), "USB");
 
-    // Spawn the core1 task.  Right now this does nothing except feed the
-    // watchdog.
-    spawn_core1(p_core1);
+    // Spawn the core1 task to start the Bulk task and hence the core
+    // Commodore protocol handling.
+    core1_spawn(p_core1, bulk);
 
-    // Register the tasks with the watchdog.  We do this after we have created
-    // the tasks, so that the watchdog doesn't expect to be fed until they are#
-    // running.
-    register_task(TaskId::Bulk, BULK_WATCHDOG_TIMER);
-    register_task(TaskId::Display, STATUS_DISPLAY_WATCHDOG_TIMER);
-    register_task(TaskId::Core1, CORE1_WATCHDOG_TIMER);
+    // Finally, spawn the watchdog task.  This starts the hardware watchdog,
+    // and our watchdog starts checking it's being fed by any registered
+    // tasks.
+    core0_spawn_or_reboot(spawner.spawn(watchdog_task()), "Watchdog");
 
-    // Now spawn the watchdog task.
-    spawn_or_reboot(spawner.spawn(watchdog_task()), "Watchdog");
-
-    // Log every so often and avoid letting main() return.
+    let core = embassy_rp::pac::SIO.cpuid().read();
     loop {
-        info!("Main loop");
+        info!("Core{}: Main loop", core);
         Timer::after(LOOP_LOG_INTERVAL).await;
-    }
-}
-
-// Helper method to spawn tasks
-fn spawn_or_reboot<T, E: defmt::Format>(spawn_result: Result<T, E>, task_name: &str) {
-    if let Err(e) = spawn_result {
-        error!("Failed to spawn task: {}, error: {}", task_name, e);
-        reboot_normal();
     }
 }
