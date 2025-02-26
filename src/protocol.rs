@@ -21,7 +21,8 @@ use crate::constants::{
     MAX_EP_PACKET_SIZE, MAX_READ_SIZE, MAX_WRITE_SIZE, MAX_WRITE_SIZE_USIZE, PROTOCOL_HANDLER_TIMER,
 };
 use crate::display::{update_status, DisplayType};
-use crate::iec::IecBus;
+use crate::driver::ProtocolDriver;
+use crate::iec::{IecBus, IecDriver};
 
 // The PROTOCOL_ACTION static is a Mutex that is used to allow communication
 // between the Control Handler and the Protocol Handler, so the Control
@@ -250,8 +251,8 @@ pub struct ProtocolHandler {
     // the operation is complete, or `Self::state` is changed.
     transfer: Option<Transfer>,
 
-    // The IEC bus object.
-    iec_bus: IecBus,
+    // The IEC Driver.
+    iec_driver: IecDriver,
 }
 
 impl ProtocolHandler {
@@ -265,7 +266,7 @@ impl ProtocolHandler {
             state: ProtocolState::Uninitialized,
             write_ep,
             transfer: None,
-            iec_bus,
+            iec_driver: IecDriver::new(iec_bus),
         }
     }
 
@@ -285,7 +286,7 @@ impl ProtocolHandler {
     pub async fn run(&mut self) -> ! {
         loop {
             // If there is an oustanding Control action, perform it.
-            self.perform_action();
+            self.perform_action().await;
 
             // If there is a READ transfer underway, send some data.
             self.progress_read().await;
@@ -301,7 +302,7 @@ impl ProtocolHandler {
     //
     // These actions primarily come from the Control object, which sets them
     // in response to Control requests from the host.
-    fn perform_action(&mut self) {
+    async fn perform_action(&mut self) {
         // Check whether there's an action from Control to perform.
         let action = PROTOCOL_ACTION.lock(|action| {
             // Take the action out of the shared action static
@@ -321,7 +322,7 @@ impl ProtocolHandler {
             // We can only reset the ProtocolHandler when it's initialized.
             Some(ProtocolAction::Reset) => {
                 if self.state == ProtocolState::Initialized {
-                    self.reset();
+                    self.reset().await;
                 } else {
                     info!("Received Reset action when not initialized - ignoring");
                 }
@@ -562,8 +563,11 @@ impl ProtocolHandler {
     }
 
     // Reset the ProtocolHandler.  Any outstanding transfer is cleared.
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         info!("Protocol Handler - reset");
+        if let Err(e) = self.iec_driver.reset(false).await {
+            info!("Hit error reseting the bus {}", e);
+        }
         self.transfer = None
     }
 }

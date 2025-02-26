@@ -7,73 +7,27 @@
 #![allow(dead_code)]
 
 use embassy_rp::gpio::{Input, Level, Output, Pin, Pull};
+use embassy_time::{Duration, Timer};
 
-//use crate::driver::{DriverError, ProtocolDriver};
 use crate::display::{update_status, DisplayType};
+use crate::driver::{DriverError, ProtocolDriver};
 
-// The IEC protocol driver implementation
-pub struct IecDriver {
-    bus: IecBus,
-    eoi: bool,
-}
-
-impl IecDriver {
-    pub fn new(bus: IecBus) -> Self {
-        Self { bus, eoi: false }
-    }
-
-    // Check if host signaled an abort
-    async fn check_abort(&self) -> bool {
-        // Access your USB state through whatever mechanism you have
-        // e.g.: USB_STATE.with(|state| state.borrow().check_abort())
-        false // Placeholder - replace with actual implementation
-    }
-}
-
-/*
-impl ProtocolDriver for IecDriver {
-    async fn reset(&mut self, forever: bool) -> Result<(), DriverError> {
-        defmt::debug!("reset");
-        self.bus.release_lines(IO_DATA | IO_ATN | IO_CLK | IO_SRQ);
-
-        // Reset EOI state
-        self.eoi = false;
-
-        // Hold reset line active
-        self.bus.set_reset();
-        Timer::after_millis(100).await;
-        self.bus.release_reset();
-
-        self.wait_for_free_bus(forever).await
-    }
-
-    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError> {
-        defmt::info!("crd {}", len);
-
-        // Notify USB system we're starting an I/O operation
-        // Handle this through your existing USB mechanism
-
-        self.eoi = false;
-        let mut count = 0;
-
-        while count < len {
-            // Read logic here that will update self.eoi
-
-            if self.eoi {
-                break;
-            }
-
-            count += 1;
-        }
-
-        // Notify USB system we're done with I/O
-
-        Ok(count)
-    }
-
-    // Other implementations...
-}
-*/
+const IEC_T_AT: u64 = 1000; // Max ATN response required time (us)
+                            //      IEC_T_H     inf  // Max listener hold-off time
+const IEC_T_NE: u64 = 40; // Typical non-EOI response to RFD time (us)
+const IEC_T_S: u64 = 20; // Min talker bit setup time (us, 70 typical)
+const IEC_T_V: u64 = 20; // Min data valid time (us, 20 typical)
+const IEC_T_F: u64 = 1000; // Max frame handshake time (us, 20 typical)
+const IEC_T_R: u64 = 20; // Min frame to release of ATN time (us)
+const IEC_T_BB: u64 = 100; // Min time between bytes (us)
+const IEC_T_YE: u64 = 200; // Min EOI response time (us, 250 typical)
+const IEC_T_EI: u64 = 60; // Min EOI response hold time (us)
+const IEC_T_RY: u64 = 60; // Max talker response limit (us, 30 typical)
+const IEC_T_PR: u64 = 20; // Min byte acknowledge hold time (us, 30 typical)
+                          //const IEC_T_TK: u64 = -1;   // 20/30/100 talk-attention release time (us)
+                          //      IEC_T_DC    inf  // Talk-attention acknowledge time, 0 - inf
+const IEC_T_DA: u64 = 80; // Min talk-attention ack hold time (us)
+const IEC_T_FR: u64 = 60; // Min EOI acknowledge time (us)
 
 // An object representing the physical IEC bus.  Each Line is a pair of
 // pins, one input and one output.
@@ -107,6 +61,12 @@ pub const STATUS_INIT: u8 = 0;
 pub const STATUS_READY: u8 = 1;
 pub const STATUS_ACTIVE: u8 = 2;
 pub const STATUS_ERROR: u8 = 3;
+
+// Timer contants
+const BUS_FREE_CHECK_INTERVAL: Duration = Duration::from_millis(1);
+const BUS_FREE_TIMEOUT: Duration = Duration::from_millis(1500);
+const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(10);
+const WAIT_INTERVAL: Duration = Duration::from_micros(10);
 
 /// Represents a single bidirectional IEC bus line using separate input/output pins
 pub struct Line {
@@ -280,12 +240,6 @@ impl IecBus {
         }
     }
 
-    /// Combined set and release operation
-    pub fn set_release(&mut self, set: u8, release: u8) {
-        self.set_lines(set);
-        self.release_lines(release);
-    }
-
     /// Poll all pins - returns a bit mask of active (low) lines
     /// This mimics the iec_poll_pins function in the original code
     pub fn poll_pins(&self) -> u8 {
@@ -338,7 +292,8 @@ impl IecBus {
 
     /// Convert from IEC logical representation to physical, then perform set/release
     pub fn iec_set_release(&mut self, set: u8, release: u8) {
-        self.set_release(self.iec_to_hw(set), self.iec_to_hw(release));
+        self.iec_set(set);
+        self.iec_release(release);
     }
 
     /// Poll pins and convert to IEC logical representation
@@ -360,5 +315,358 @@ impl IecBus {
         }
 
         iec
+    }
+}
+
+// The IEC protocol driver implementation
+pub struct IecDriver {
+    bus: IecBus,
+    eoi: bool,
+}
+
+impl ProtocolDriver for IecDriver {
+    async fn reset(&mut self, forever: bool) -> Result<(), DriverError> {
+        defmt::debug!("reset");
+        self.bus.release_lines(IO_DATA | IO_ATN | IO_CLK | IO_SRQ);
+
+        // Reset EOI state
+        self.eoi = false;
+
+        // Hold reset line active
+        self.bus.set_reset();
+        Timer::after_millis(100).await;
+        self.bus.release_reset();
+
+        self.wait_for_free_bus(forever).await
+    }
+
+    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError> {
+        defmt::info!("crd {}", len);
+
+        // Notify USB system we're starting an I/O operation
+        // Handle this through your existing USB mechanism
+
+        self.eoi = false;
+        let mut count = 0;
+
+        while count < len {
+            // Read logic here that will update self.eoi
+
+            if self.eoi {
+                break;
+            }
+
+            count += 1;
+        }
+
+        // Notify USB system we're done with I/O
+
+        Ok(count)
+    }
+
+    /// Combined set and release operation
+    async fn set_release(&mut self, set: u8, release: u8) {
+        self.bus.set_lines(set);
+        self.bus.release_lines(release);
+    }
+
+    async fn raw_write(&mut self, data: &[u8], flags: u8) -> Result<u16, DriverError> {
+        let atn = flags & XUM_WRITE_ATN != 0;
+        let talk = flags & XUM_WRITE_TALK != 0;
+        let len = data.len() as u16;
+
+        defmt::info!("cwr {}, atn {}, talk {}", len, atn, talk);
+
+        if len == 0 {
+            return Ok(0);
+        }
+
+        // First, check if any device is present on the bus
+        if !self.wait_timeout_2ms(IO_ATN | IO_RESET, 0).await {
+            defmt::error!("write: no devs on bus");
+            return Err(DriverError::BusOccupied);
+        }
+
+        self.bus.release_lines(IO_DATA);
+        if atn {
+            self.bus.set_lines(IO_CLK | IO_ATN);
+        } else {
+            self.bus.set_lines(IO_CLK);
+        }
+
+        // Short delay to let lines settle
+        Timer::after_micros(2).await;
+
+        // Wait for any device to pull data after we set CLK
+        if !self.wait_timeout_2ms(IO_DATA, IO_DATA).await {
+            defmt::error!("write: no devs");
+            self.bus.release_lines(IO_CLK | IO_ATN);
+            return Err(DriverError::Timeout);
+        }
+
+        // Wait for drive to be ready for us to release CLK
+        Timer::after_micros(IEC_T_NE).await;
+
+        // Send bytes
+        let mut count = 0;
+        for (i, &byte) in data.iter().enumerate() {
+            let is_last_byte = i == data.len() - 1;
+
+            // Be sure DATA line has been pulled by device
+            if !self.bus.get_data() {
+                defmt::error!("write: dev not pres");
+                return Ok(count);
+            }
+
+            // Release CLK and wait for listener to release data
+            if !self.wait_for_listener().await {
+                defmt::error!("write: w4l abrt");
+                return Ok(count);
+            }
+
+            // Signal EOI for last byte
+            if is_last_byte && !atn {
+                self.wait_timeout_2ms(IO_DATA, IO_DATA).await;
+                self.wait_timeout_2ms(IO_DATA, 0).await;
+            }
+
+            self.bus.set_lines(IO_CLK);
+
+            // Send the byte
+            if self.send_byte(byte).await {
+                count += 1;
+                Timer::after_micros(IEC_T_BB).await;
+            } else {
+                defmt::error!("write: io err");
+                break;
+            }
+        }
+
+        // Talk-ATN turn around if requested
+        if count > 0 {
+            if talk {
+                // Hold DATA and release ATN
+                self.bus.set_lines(IO_DATA);
+                self.bus.release_lines(IO_ATN);
+                // IEC_T_TK was defined to be -1 in the original C code which
+                // presumably meant to skip the delay.  We'll oblige.
+                //Timer::after_micros(IEC_T_TK).await;
+
+                // Release CLK and wait for device to grab it
+                self.bus.release_lines(IO_CLK);
+                Timer::after_micros(2).await;
+
+                // Wait for device
+                if self.wait(IO_CLK, 1).await.is_err() {
+                    return Ok(count);
+                }
+            } else {
+                self.bus.release_lines(IO_ATN);
+            }
+        } else {
+            // Error case, release all lines
+            Timer::after_micros(IEC_T_R).await;
+            self.bus.release_lines(IO_CLK | IO_ATN);
+        }
+
+        defmt::info!("wrv={}", count);
+        Ok(count)
+    }
+
+    async fn wait(&mut self, line: u8, state: u8) -> Result<(), DriverError> {
+        let hw_mask = self.iec2hw(line);
+        let hw_state = if state != 0 { hw_mask } else { 0 };
+
+        // Continuously poll lines until we get the expected state or timeout
+        while (self.bus.poll_pins() & hw_mask) == hw_state {
+            // Check if we should cancel
+            if self.check_abort() {
+                return Err(DriverError::Resetting);
+            }
+
+            Timer::after(WAIT_INTERVAL).await;
+        }
+
+        Ok(())
+    }
+
+    async fn poll(&mut self) -> u8 {
+        let iec_state = self.bus.poll_pins();
+        let mut rv = 0;
+
+        if (iec_state & IO_DATA) == 0 {
+            rv |= IEC_DATA;
+        }
+        if (iec_state & IO_CLK) == 0 {
+            rv |= IEC_CLOCK;
+        }
+        if (iec_state & IO_ATN) == 0 {
+            rv |= IEC_ATN;
+        }
+        if (iec_state & IO_SRQ) == 0 {
+            rv |= IEC_SRQ;
+        }
+
+        rv
+    }
+}
+
+impl IecDriver {
+    pub fn new(bus: IecBus) -> Self {
+        Self { bus, eoi: false }
+    }
+
+    /// Wait for listener to release DATA line
+    async fn wait_for_listener(&mut self) -> bool {
+        // Release CLK to indicate we're ready to send
+        self.bus.release_lines(IO_CLK);
+
+        // Wait for device to release DATA
+        while self.bus.get_data() {
+            if self.check_abort() {
+                return false;
+            }
+            Timer::after(LISTENER_WAIT_INTERVAL).await;
+        }
+
+        true
+    }
+
+    /// Send a byte, one bit at a time via the IEC protocol
+    async fn send_byte(&mut self, b: u8) -> bool {
+        let mut data = b;
+
+        for _ in 0..8 {
+            // Wait for setup time
+            Timer::after_micros(IEC_T_S + 55).await;
+
+            // Set the bit value on the DATA line
+            if (data & 1) == 0 {
+                self.bus.set_lines(IO_DATA);
+                Timer::after_micros(2).await;
+            }
+
+            // Trigger clock edge and hold valid for specified time
+            self.bus.release_lines(IO_CLK);
+            Timer::after_micros(IEC_T_V).await;
+
+            // Prepare for next bit
+            self.bus.set_lines(IO_CLK);
+            self.bus.release_lines(IO_DATA);
+            data >>= 1;
+        }
+
+        // Wait for acknowledgement
+        self.wait_timeout_2ms(IO_DATA, IO_DATA).await
+    }
+
+    /// Wait up to 2ms for lines to reach specified state
+    async fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
+        for _ in 0..200 {
+            if (self.bus.poll_pins() & mask) != state {
+                return true;
+            }
+            Timer::after_micros(10).await;
+        }
+        false
+    }
+
+    /// Wait for the bus to be free
+    async fn wait_for_free_bus(&mut self, forever: bool) -> Result<(), DriverError> {
+        let timeout = if forever {
+            None
+        } else {
+            Some(BUS_FREE_TIMEOUT)
+        };
+
+        let start = embassy_time::Instant::now();
+
+        loop {
+            // Check if bus is free
+            if self.check_if_bus_free().await {
+                return Ok(());
+            }
+
+            // Check for abort signal
+            if self.check_abort() {
+                return Err(DriverError::Resetting);
+            }
+
+            // Check timeout if not running forever
+            if let Some(timeout) = timeout {
+                if start.elapsed() >= timeout {
+                    defmt::error!("wait4free bus timeout");
+                    return Err(DriverError::Timeout);
+                }
+            }
+
+            // Yield to other tasks and wait a bit before checking again
+            Timer::after(BUS_FREE_CHECK_INTERVAL).await;
+        }
+    }
+
+    /// Check if the bus is free
+    async fn check_if_bus_free(&mut self) -> bool {
+        // Release all lines and wait for drive reaction time
+        self.bus.release_lines(IO_ATN | IO_CLK | IO_DATA | IO_RESET);
+        Timer::after_micros(50).await;
+
+        // If DATA is held, drive is not yet ready
+        if self.bus.get_data() {
+            Timer::after_micros(150).await;
+            return false;
+        }
+
+        // Ensure DATA is stable
+        Timer::after_micros(50).await;
+        if self.bus.get_data() {
+            Timer::after_micros(100).await;
+            return false;
+        }
+
+        // Assert ATN and wait for drive reaction
+        self.bus.set_lines(IO_ATN);
+        Timer::after_micros(100).await;
+
+        // If DATA is still unset, no drive answered
+        if !self.bus.get_data() {
+            self.bus.release_lines(IO_ATN);
+            return false;
+        }
+
+        // Test releasing ATN
+        self.bus.release_lines(IO_ATN);
+        Timer::after_micros(100).await;
+
+        // Check if drive released DATA
+        !self.bus.get_data()
+    }
+
+    // Check if host signaled an abort
+    fn check_abort(&self) -> bool {
+        // TO DO
+        // Access your USB state through whatever mechanism you have
+        // e.g.: USB_STATE.with(|state| state.borrow().check_abort())
+        false // Placeholder - replace with actual implementation
+    }
+
+    /// Convert logical IEC lines to hardware-specific representation
+    fn iec2hw(&self, iec: u8) -> u8 {
+        // This would implement the conversion based on the C code's lookup table
+        // Simplified implementation for demonstration
+        let mut result = 0;
+        if iec & IEC_DATA != 0 {
+            result |= IO_DATA;
+        }
+        if iec & IEC_CLOCK != 0 {
+            result |= IO_CLK;
+        }
+        if iec & IEC_ATN != 0 {
+            result |= IO_ATN;
+        }
+        if iec & IEC_SRQ != 0 {
+            result |= IO_SRQ;
+        }
+        result
     }
 }
