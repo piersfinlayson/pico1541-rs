@@ -150,7 +150,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
 
     // Create the USB stack and the Bulk object.  We do this at the same time
     // because Bulk needs the endpoints from the USB Stack creation.
-    let (usb, bulk) = UsbStack::create_static(p_usb, usb_serial, iec_bus);
+    let (usb, bulk, write_ep) = UsbStack::create_static(p_usb, usb_serial);
 
     // Set up the watchdog - stores it in the WATCHDOG static.  We do this
     // before we create any tasks (as they might try and access the static
@@ -171,7 +171,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
 
     // Spawn the core1 task to start the Bulk task and the core Commodore
     // protocol handling.
-    core1_spawn(p_core1, bulk);
+    core1_spawn(p_core1, bulk, iec_bus, write_ep);
 
     // Finally, spawn the watchdog task.  This starts the hardware watchdog,
     // and our watchdog starts checking it's being fed by any registered

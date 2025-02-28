@@ -18,7 +18,6 @@ use crate::constants::{
 };
 use crate::control::Control;
 use crate::dev_info::{IN_EP, MANUFACTURER, OUT_EP, PRODUCT, PRODUCT_ID, VENDOR_ID};
-use crate::iec::IecBus;
 
 // Bind the hardware USB interrupt to the USB stack.  Interrupts are the
 // primary mechanism the USB stack uses to receive data from hardware.
@@ -60,10 +59,10 @@ impl UsbStack {
     pub fn create_static(
         p_usb: USB,
         serial: &'static str,
-        iec_bus: IecBus,
     ) -> (
         &'static mut UsbDevice<'static, embassy_rp::usb::Driver<'static, USB>>,
         &'static mut Bulk,
+        Endpoint<'static, USB, In>,
     ) {
         // Create a new USB device
         let mut driver = RpUsbDriver::new(p_usb, Irqs);
@@ -149,11 +148,12 @@ impl UsbStack {
 
         // Create a Bulk object, which will listen for data on the OUT endpoint
         // and feed the watchdog.
-        let bulk = Bulk::new(ep_out, ep_in, iec_bus);
+        let bulk = Bulk::new(ep_out);
         let bulk = BULK.init(bulk);
 
-        // Now return the USB device and the Bulk object.
-        (usb, bulk)
+        // Now return the USB device,the Bulk object and the write endpoint
+        // (that last for ProtocolHandler).
+        (usb, bulk, ep_in)
     }
 
     // Used to allocate specific endpoint numbers.  We do this to maintain

@@ -466,7 +466,7 @@ impl ProtocolDriver for IecDriver {
                 buf_count = 0;
             }
 
-            feed_watchdog(TaskId::Bulk);
+            feed_watchdog(TaskId::ProtocolHandler);
         }
 
         if buf_count > 0 {
@@ -563,7 +563,7 @@ impl ProtocolDriver for IecDriver {
                 return Err(DriverError::Io);
             }
 
-            feed_watchdog(TaskId::Bulk);
+            feed_watchdog(TaskId::ProtocolHandler);
         }
 
         // Talk-ATN turn around if requested
@@ -652,7 +652,7 @@ impl IecDriver {
                 return false;
             }
             Timer::after(LISTENER_WAIT_INTERVAL).await;
-            feed_watchdog(TaskId::Bulk);
+            feed_watchdog(TaskId::ProtocolHandler);
         }
 
         true
@@ -752,7 +752,7 @@ impl IecDriver {
                 Timer::after(BUS_FREE_CHECK_INTERVAL).await;
 
                 // Feed the bus
-                feed_watchdog(TaskId::Bulk);
+                feed_watchdog(TaskId::ProtocolHandler);
             }
         }
 

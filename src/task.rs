@@ -8,12 +8,15 @@
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::{Executor, Spawner};
 use embassy_rp::multicore::{spawn_core1 as rp_spawn_core1, Stack};
-use embassy_rp::peripherals::CORE1;
+use embassy_rp::peripherals::{CORE1, USB};
+use embassy_rp::usb::{Endpoint, In};
 use embassy_time::Timer;
 use static_cell::StaticCell;
 
 use crate::bulk::Bulk;
 use crate::constants::CORE1_STACK_SIZE;
+use crate::iec::IecBus;
+use crate::protocol::protocol_handler_task;
 use crate::watchdog::reboot_normal;
 
 // Threading and tasks model
@@ -58,21 +61,34 @@ static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 // have declared as a static.  We haven't bothered to mutex protect it, so we
 // need to use an unsafe block to access it.
 #[allow(static_mut_refs)]
-pub fn core1_spawn(p_core1: CORE1, bulk: &'static mut Bulk) {
+pub fn core1_spawn(
+    p_core1: CORE1,
+    bulk: &'static mut Bulk,
+    iec_bus: IecBus,
+    write_ep: Endpoint<'static, USB, In>,
+) {
     rp_spawn_core1(p_core1, unsafe { &mut CORE1_STACK }, move || {
         let executor1 = EXECUTOR1.init(Executor::new());
-        executor1.run(|spawner| core1_main(&spawner, bulk))
+        executor1.run(|spawner| core1_main(&spawner, bulk, iec_bus, write_ep))
     });
 }
 
 // Core 1's "main" function.  This gets run get the executor on core 1, and
 // spawns core 1's tasks.
-pub fn core1_main(spawner: &Spawner, bulk: &'static mut Bulk) {
+pub fn core1_main(
+    spawner: &Spawner,
+    bulk: &'static mut Bulk,
+    iec_bus: IecBus,
+    write_ep: Endpoint<'static, USB, In>,
+) {
     let core: u32 = embassy_rp::pac::SIO.cpuid().read();
     info!("Core{}: Core 1 main started", core);
 
-    // Spawn a dummy task
-    spawn_or_reboot(spawner.spawn(core1_dummy()), "core1_dummy");
+    // Spawn the Protocol Handler task.
+    spawn_or_reboot(
+        spawner.spawn(protocol_handler_task(iec_bus, write_ep)),
+        "Protocol Handler",
+    );
 
     // Spawn core'1 current task.
     spawner.spawn(core1_task(bulk)).unwrap();

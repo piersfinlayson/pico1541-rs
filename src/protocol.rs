@@ -12,15 +12,21 @@ use defmt::{debug, error, info, trace, warn};
 use bitflags::bitflags;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
+use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
+use embassy_time::Instant;
 use embassy_usb::driver::EndpointIn;
 use heapless::Vec;
 
-use crate::constants::{MAX_READ_SIZE, MAX_WRITE_SIZE, MAX_WRITE_SIZE_USIZE};
+use crate::constants::{
+    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_READ_SIZE, MAX_WRITE_SIZE,
+    MAX_WRITE_SIZE_USIZE, PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE,
+};
 use crate::display::{update_status, DisplayType};
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::iec::{IecBus, IecDriver};
+use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
 // The PROTOCOL_ACTION static is a Signal that is used to communicate to the
 // Protocol Handler that a protocol state change is requrested.  We use a
@@ -39,6 +45,14 @@ pub static PROTOCOL_ACTION: Signal<CriticalSectionRawMutex, ProtocolAction> = Si
 // it's up to the Protocol handling code to read it out of the buffer in a
 // timely enough fashion.
 static mut WRITE_DATA: Vec<u8, MAX_WRITE_SIZE_USIZE> = Vec::new();
+
+// A channel for Bulk to send read data from the OUT endpoint into, and then
+// send it to the ProtocolHandler.
+pub static WRITE_DATA_CHANNEL: Channel<
+    ThreadModeRawMutex,
+    (usize, [u8; MAX_EP_PACKET_SIZE_USIZE]),
+    READ_DATA_CHANNEL_SIZE,
+> = Channel::new();
 
 // ProtocolState is used by ProtocolHandler to store its state.
 #[derive(PartialEq)]
@@ -232,6 +246,9 @@ pub struct ProtocolHandler {
 
     // The IEC Driver.
     iec_driver: IecDriver,
+
+    // Core we are running on
+    core: u32,
 }
 
 impl ProtocolHandler {
@@ -240,12 +257,13 @@ impl ProtocolHandler {
     /// The Bulk object retains the OUT (read) endpoint as this must be read
     /// from within the main Bulk future runner (which hands bulk OUT
     /// transfers).
-    pub fn new(write_ep: Endpoint<'static, USB, In>, iec_bus: IecBus) -> Self {
+    pub fn new(core: u32, write_ep: Endpoint<'static, USB, In>, iec_bus: IecBus) -> Self {
         Self {
             state: ProtocolState::Uninitialized,
             write_ep,
             transfer: None,
             iec_driver: IecDriver::new(iec_bus),
+            core,
         }
     }
 
@@ -540,6 +558,64 @@ impl ProtocolHandler {
             info!("Hit error reseting the bus {}", e);
         }
         self.transfer = None
+    }
+
+    // See if there's any data in WRITE_DATA_CHANNEL from Bulk for us to
+    // process.
+    // TO DO - don't just read all written data into a massive WRITE buffer.
+    // Instead keep it close by ready to feed to IecDriver when it asks for
+    // it. 
+    async fn handle_data(&mut self) {
+        // See if there's any data on Channel
+        match WRITE_DATA_CHANNEL.try_receive() {
+            Ok((size, data)) => {
+                info!("Received data from channel: {:?}", data);
+                if size <= MAX_WRITE_SIZE_USIZE {
+                    // We got bulk data.  Handle it.
+                    self.received_data(&data, size as u16).await;
+                } else {
+                    info!(
+                        "Received more data than we can handle {} bytes - dropping",
+                        size
+                    );
+                }
+            }
+            Err(_) => {
+                // No data
+            }
+        }
+    }
+}
+
+#[embassy_executor::task]
+pub async fn protocol_handler_task(iec_bus: IecBus, write_ep: Endpoint<'static, USB, In>) -> ! {
+    // Read the core ID.  Tasks are allocated to cores at compile time with
+    // embassy, so we only need to do this once and store in ProtocolHandler.
+    let core = embassy_rp::pac::SIO.cpuid().read();
+
+    // Create and spawn the ProtocolHandler task.
+    let mut protocol_handler = ProtocolHandler::new(core, write_ep, iec_bus);
+
+    // Register with the watchdog
+    register_task(TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER);
+
+    let mut next_log_instant = Instant::now();
+
+    loop {
+        let now = Instant::now();
+        if now >= next_log_instant {
+            info!("Core{}: Protocol loop", protocol_handler.core);
+            next_log_instant = now + LOOP_LOG_INTERVAL;
+        }
+
+        // Feed the watchdog
+        feed_watchdog(TaskId::ProtocolHandler);
+
+        // Perform any actions that are waiting.
+        protocol_handler.perform_action().await;
+
+        // Handle any data read in by the USB driver.
+        protocol_handler.handle_data().await;
     }
 }
 

@@ -128,11 +128,15 @@ impl Watchdog {
 /// The tasks which are policed by the watchdog.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub enum TaskId {
-    /// The Bulk task
-    Bulk = 0,
+    /// The ProtcolHandler task,
+    ProtocolHandler = 0,
 
     /// The StatusDisplay
     Display,
+
+    // We cannot police USB as it needs to run permanently.  The same goes
+    // for the Bulk task.  While Endpoint<_, _, IN>::read() claims to be
+    // cancel safe you may lose data in the process of being handled.
 
     // Add any other tasks here
     // ...

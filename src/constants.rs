@@ -26,8 +26,9 @@ pub const WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 /// reset the device.
 pub const WATCHDOG_LOOP_TIMER: Duration = Duration::from_millis(100);
 
-/// How often the bulk task must feed the watchdog to prevent a reset.
-pub const BULK_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
+/// How often the protocol handler task must feed the watchdog to prevent a
+/// reset.
+pub const PROTOCOL_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 
 /// How often the status display must feed the watchdog to prevent a reset.
 pub const STATUS_DISPLAY_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
@@ -69,6 +70,7 @@ pub const MAX_PACKET_SIZE_0: u8 = 64;
 
 /// USB Descriptor information - maximum vendor endpoint packet sizes.
 pub const MAX_EP_PACKET_SIZE: u16 = 64;
+pub const MAX_EP_PACKET_SIZE_USIZE: usize = MAX_EP_PACKET_SIZE as usize;
 
 /// OUT (Host to Devive) endpoint number.  Note on the Pi this cannot be
 /// larger than 0x0F, as the Pi only supports up to 16 endpoints in its
@@ -137,3 +139,8 @@ pub const XUM1541_FIRMWARE_VERSION: u8 = 8;
 
 /// The size (in bytes) of the stack for core 1.
 pub const CORE1_STACK_SIZE: usize = 4096;
+
+// Number of MAX_READ_SIZE size buffers uses in the READ_DATA channel .  We'll
+// stick with 1 for now, so we can only ever have a single (64-byte) packet
+// outstanding
+pub const READ_DATA_CHANNEL_SIZE: usize = 1;
