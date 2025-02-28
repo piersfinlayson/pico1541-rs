@@ -10,10 +10,10 @@
 use defmt::{debug, error, info, trace, warn};
 
 use bitflags::bitflags;
-use core::cell::RefCell;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
-use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_usb::driver::EndpointIn;
 use heapless::Vec;
 
@@ -22,15 +22,11 @@ use crate::display::{update_status, DisplayType};
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::iec::{IecBus, IecDriver};
 
-// The PROTOCOL_ACTION static is a Mutex that is used to allow communication
-// between the Control Handler and the Protocol Handler, so the Control
-// Handler can instruct the Protocol Handler to perform actions in response to
-// Control requests from the host.
-//
-// This object is shared between Control and ProtocolHandler (via Bulk), so we
-// need both a Mutex, we need a RefCell to allow us to mutate the object.
-pub static PROTOCOL_ACTION: Mutex<CriticalSectionRawMutex, RefCell<Option<ProtocolAction>>> =
-    Mutex::new(RefCell::new(Some(ProtocolAction::Uninitialize)));
+// The PROTOCOL_ACTION static is a Signal that is used to communicate to the
+// Protocol Handler that a protocol state change is requrested.  We use a
+// CriticalSectionRawMutex Signal because the Protocol Handler and Control
+// Handler (which sends signals) run on different cores.
+pub static PROTOCOL_ACTION: Signal<CriticalSectionRawMutex, ProtocolAction> = Signal::new();
 
 // We need a static for the write data we may be asked to read in.  The
 // maximum size of a data transfer supported by the xum1541 is 32768 bytes,
@@ -260,33 +256,32 @@ impl ProtocolHandler {
     // These actions primarily come from the Control object, which sets them
     // in response to Control requests from the host.
     pub async fn perform_action(&mut self) {
-        // Check whether there's an action from Control to perform.
-        let action = PROTOCOL_ACTION.lock(|action| {
-            // Take the action out of the shared action static
-            let perform_action = action.take();
-            *action.borrow_mut() = None;
-            perform_action
-        });
+        // Check whether there's an action from Control to perform.  This also
+        // removes it from the PROTOCOL_ACTION signal.
+        let action = match PROTOCOL_ACTION.try_take() {
+            Some(action) => action,
+            None => {
+                // No action to perform
+                return;
+            }
+        };
 
         // If there is one, perform it.
         match action {
             // We can initialize the ProtocolHandler when it's in any state.
-            Some(ProtocolAction::Initialize) => self.initialize(),
+            ProtocolAction::Initialize => self.initialize(),
 
             // We can unintialize the ProtocolHandler when it's in any state.
-            Some(ProtocolAction::Uninitialize) => self.uninitialize(),
+            ProtocolAction::Uninitialize => self.uninitialize(),
 
             // We can only reset the ProtocolHandler when it's initialized.
-            Some(ProtocolAction::Reset) => {
+            ProtocolAction::Reset => {
                 if self.state == ProtocolState::Initialized {
                     self.reset().await;
                 } else {
                     info!("Received Reset action when not initialized - ignoring");
                 }
             }
-
-            // No oustanding action to perform
-            None => (),
         }
     }
 

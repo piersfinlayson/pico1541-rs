@@ -45,7 +45,7 @@ use constants::LOOP_LOG_INTERVAL;
 use dev_info::get_serial;
 use display::status_task;
 use gpio::Gpio;
-use task::{spawn_or_reboot, core1_spawn};
+use task::{core1_spawn, spawn_or_reboot};
 use usb::{usb_task, UsbStack};
 use watchdog::{watchdog_task, Watchdog};
 

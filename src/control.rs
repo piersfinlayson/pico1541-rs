@@ -292,29 +292,31 @@ impl Control {
     // Sets the shared PROTOCOL_ACTION to the given action to signal to the
     // ProtocolHandler object to take the appropriate action.
     fn set_action(&self, action: ProtocolAction) {
-        PROTOCOL_ACTION.lock(|a| {
-            let current_action = a.borrow().clone();
+        // Try to take the current action - if there is one we need to
+        // decide how to modify it and then resignal it.
+        let action = match PROTOCOL_ACTION.try_take() {
+            Some(existing) => {
+                match action {
+                    // Initialize takes precedence over any other outstanding
+                    // action
+                    ProtocolAction::Initialize => ProtocolAction::Initialize,
 
-            match action {
-                // Initialize takes precedence over any other action
-                ProtocolAction::Initialize => *a.borrow_mut() = Some(ProtocolAction::Initialize),
+                    // Unitialize takes precedence over any other outstanding
+                    // action
+                    ProtocolAction::Uninitialize => ProtocolAction::Uninitialize,
 
-                // Unitialize takes precedence over any other action
-                ProtocolAction::Uninitialize => {
-                    *a.borrow_mut() = Some(ProtocolAction::Uninitialize)
-                }
-
-                // Only set the action to reset if there's no action
-                // outstanding
-                ProtocolAction::Reset => match current_action {
-                    None => *a.borrow_mut() = Some(ProtocolAction::Reset),
-                    Some(a) => info!(
-                        "Reset request received - ignoring as oustanding action: {}",
-                        a
-                    ),
-                },
+                    // Only set the action to reset if there's no action
+                    // outstanding (which there is if we get here)
+                    ProtocolAction::Reset => existing,
+                };
+                action
             }
-        });
+            None => action,
+        };
+
+        // signal() always succeeds as it overwrites any other value - but
+        // there shouldn't be one because we just took it.
+        PROTOCOL_ACTION.signal(action);
     }
 }
 

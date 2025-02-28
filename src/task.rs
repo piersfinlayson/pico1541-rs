@@ -61,12 +61,12 @@ static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 pub fn core1_spawn(p_core1: CORE1, bulk: &'static mut Bulk) {
     rp_spawn_core1(p_core1, unsafe { &mut CORE1_STACK }, move || {
         let executor1 = EXECUTOR1.init(Executor::new());
-        executor1.run(|mut spawner| core1_main(&mut spawner, bulk))
+        executor1.run(|spawner| core1_main(&spawner, bulk))
     });
 }
 
 // Core 1's "main" function.  This gets run get the executor on core 1, and
-// spawns core 1's tasks. 
+// spawns core 1's tasks.
 pub fn core1_main(spawner: &Spawner, bulk: &'static mut Bulk) {
     let core: u32 = embassy_rp::pac::SIO.cpuid().read();
     info!("Core{}: Core 1 main started", core);
