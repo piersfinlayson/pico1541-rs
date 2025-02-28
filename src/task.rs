@@ -9,6 +9,7 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_executor::{Executor, Spawner};
 use embassy_rp::multicore::{spawn_core1 as rp_spawn_core1, Stack};
 use embassy_rp::peripherals::CORE1;
+use embassy_time::Timer;
 use static_cell::StaticCell;
 
 use crate::bulk::Bulk;
@@ -64,19 +65,24 @@ pub fn core1_spawn(p_core1: CORE1, bulk: &'static mut Bulk) {
     });
 }
 
+// Core 1's "main" function.  This gets run get the executor on core 1, and
+// spawns core 1's tasks. 
 pub fn core1_main(spawner: &Spawner, bulk: &'static mut Bulk) {
     let core: u32 = embassy_rp::pac::SIO.cpuid().read();
     info!("Core{}: Core 1 main started", core);
 
+    // Spawn a dummy task
     spawn_or_reboot(spawner.spawn(core1_dummy()), "core1_dummy");
 
+    // Spawn core'1 current task.
     spawner.spawn(core1_task(bulk)).unwrap();
-
 }
 
 #[embassy_executor::task]
 async fn core1_dummy() -> ! {
-    loop {}
+    loop {
+        Timer::after_micros(1000).await;
+    }
 }
 
 #[embassy_executor::task]
