@@ -9,19 +9,17 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 
+use bitflags::bitflags;
 use core::cell::RefCell;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
-use embassy_time::Timer;
 use embassy_usb::driver::EndpointIn;
 use heapless::Vec;
 
-use crate::constants::{
-    MAX_EP_PACKET_SIZE, MAX_READ_SIZE, MAX_WRITE_SIZE, MAX_WRITE_SIZE_USIZE, PROTOCOL_HANDLER_TIMER,
-};
+use crate::constants::{MAX_READ_SIZE, MAX_WRITE_SIZE, MAX_WRITE_SIZE_USIZE};
 use crate::display::{update_status, DisplayType};
-use crate::driver::ProtocolDriver;
+use crate::driver::{DriverError, ProtocolDriver};
 use crate::iec::{IecBus, IecDriver};
 
 // The PROTOCOL_ACTION static is a Mutex that is used to allow communication
@@ -94,6 +92,7 @@ impl defmt::Format for ProtocolAction {
 // device).  Reads are sent on the IN endpoint (as they are device to host).
 #[allow(clippy::large_enum_variant)]
 enum Transfer {
+    #[allow(dead_code)]
     Read(Read),
     Write(Write),
 }
@@ -111,6 +110,12 @@ struct Write {
     // in data.
     received_bytes: u16,
 
+    // Protocol to use.
+    protocol: ProtocolType,
+
+    // Protocol flags.
+    flags: ProtocolFlags,
+
     // A buffer to hold all of the data to be written.  As we are running on
     // an embedded device, and we are no_std, we are using heapless::Vec.
     // So long as Write is within Transfer, which is within ProtocolHandler,
@@ -122,8 +127,8 @@ struct Write {
 impl Write {
     // Create a new Write transfer, with a buffer large enough to store all
     // possible incoming data.
-    fn new(expected_len: u16) -> Result<Self, Status> {
-        if expected_len < MAX_WRITE_SIZE {
+    fn new(command: Command) -> Result<Self, Status> {
+        if command.len < MAX_WRITE_SIZE {
             // This should be safe, as Bulk and Protocol are the only objects
             // that access data, and they run within a single thread, on core
             // 1.  Nothing else can access it.  The only functionality that
@@ -132,19 +137,18 @@ impl Write {
             unsafe {
                 #[allow(static_mut_refs)]
                 Ok(Self {
-                    expected_len,
+                    expected_len: command.len,
                     received_bytes: 0,
+                    protocol: command.protocol,
+                    flags: command.flags,
                     data: &mut WRITE_DATA,
                 })
             }
         } else {
-            info!(
-                "Received WRITE command for too many bytes: {}",
-                expected_len
-            );
+            info!("Received WRITE command for too many bytes: {}", command.len);
             Err(Status {
                 code: StatusCode::Error,
-                value: expected_len,
+                value: command.len,
             })
         }
     }
@@ -180,56 +184,35 @@ impl Write {
 // A Read operation.  This is created when a READ command is received via
 // the bulk OUT endpoint, used to manage the sending of the data to the IN
 // endpoint.
-struct Read {
+pub struct Read {
     // Number of bytes the host is expecting us to send.  The transfer is not
     // complete until we have sent this number of bytes (or the device is
     // reset, uninitialized, or initialized.
-    len: u16,
+    pub len: u16,
 
-    // Total number of bytes of data which have been sent so far.
-    sent_bytes: u16,
-
-    // Buffer used to send the next set of packets out of the IN endpoint.
-    // This buffer is MAX_EP_PACKET_SIZE (64) so the maximum amount of data
-    // can be sent in a single chunk.
-    buffer: [u8; MAX_EP_PACKET_SIZE as usize],
+    // Protocol to use
+    protocol: ProtocolType,
 }
 
 impl Read {
     // Create a new Read transfer.  As this example implementation sends dummy
     // data we refill the buffer with all 'x's.  In a real implementation this
     // would need to be enhanced.
-    fn new(len: u16) -> Result<Self, ()> {
-        if len <= MAX_READ_SIZE {
-            Ok(Self {
-                len,
-                sent_bytes: 0,
-                buffer: [b'x'; MAX_EP_PACKET_SIZE as usize],
-            })
-        } else {
-            info!("Received READ command for too many bytes: {}", len);
-            Err(())
-        }
-    }
-
-    // Retrieves the data to be sent in the next send operation.  This
-    // function will just send all 'x's until the right amount of data has
-    // been supplied.  An empty buffer means no more data to send.
-    fn send_data(&mut self) -> &[u8] {
-        let remaining = self.len - self.sent_bytes;
-        if remaining == 0 {
-            return &[];
+    fn new(command: Command) -> Result<Self, ()> {
+        if command.len > MAX_READ_SIZE {
+            info!("Received READ command for too many bytes: {}", command.len);
+            return Err(());
         }
 
-        let to_send = remaining.min(MAX_EP_PACKET_SIZE);
-        self.sent_bytes += to_send;
-        &self.buffer[..(to_send as usize)]
-    }
+        if command.flags.is_any() {
+            info!("Unsupported flags on read: {:?}", command.flags);
+            return Err(());
+        }
 
-    // Whether the transfer is complete.  Unlike Write this does not return an
-    // Option<Status> as no status is returned on completion of a READ.
-    fn complete(&self) -> bool {
-        self.sent_bytes >= self.len
+        Ok(Self {
+            len: command.len,
+            protocol: command.protocol,
+        })
     }
 }
 
@@ -270,39 +253,13 @@ impl ProtocolHandler {
         }
     }
 
-    /// This is a runner that checkes periodically if there's an action to
-    /// perform.  It never returns - it is intended that it runs
-    /// continuously once the device has been started.  
-    ///
-    /// This action may either be an action stored in PROTOCOL_ACTION,
-    /// or data which the host has requested to be read from us, which needs
-    /// to be served.
-    ///
-    /// PROTOCOL_ACTIONs are set by the Control object in response to the
-    /// appropriate incoming host Control request.
-    ///
-    /// Data which has been requested by the host has been setup using a
-    /// Transfer::Read type, and was initialized using `received_data()`.
-    pub async fn run(&mut self) -> ! {
-        loop {
-            // If there is an oustanding Control action, perform it.
-            self.perform_action().await;
-
-            // If there is a READ transfer underway, send some data.
-            self.progress_read().await;
-
-            // Pause briefly in order to allow others to lock PROTOCOL_ACTION.
-            Timer::after(PROTOCOL_HANDLER_TIMER).await;
-        }
-    }
-
     // Called from the main runner to perform an action.  This is called every
     // spin of the main runner, and will perform an action if one is
     // waiting.
     //
     // These actions primarily come from the Control object, which sets them
     // in response to Control requests from the host.
-    async fn perform_action(&mut self) {
+    pub async fn perform_action(&mut self) {
         // Check whether there's an action from Control to perform.
         let action = PROTOCOL_ACTION.lock(|action| {
             // Take the action out of the shared action static
@@ -330,42 +287,6 @@ impl ProtocolHandler {
 
             // No oustanding action to perform
             None => (),
-        }
-    }
-
-    // Called from the main runner to send a chunk of data from a READ
-    // transfer.  This is called every spin of the main runner, and will
-    // send data if a READ transfer is underway (and there is data to send).
-    async fn progress_read(&mut self) {
-        // Send some data if a READ transfer is outstanding.
-        if let Some(Transfer::Read(read)) = self.transfer.as_mut() {
-            // Get some data to send.
-            let data = read.send_data();
-            // If there is no data to send, this is not an error
-            // condition - in a future implementation when data is
-            // actually sourced from somewhere useful, we may not
-            // have managed to source the data since we last sent
-            // some data.
-            if !data.is_empty() {
-                match self.write_ep.write(data).await {
-                    Ok(_) => {
-                        // The transfer of this chunk of data
-                        // succeeded, so see if this READ is now
-                        // complete.
-                        if read.complete() {
-                            info!("READ complete");
-                            self.transfer = None;
-                        }
-                    }
-                    Err(_) => {
-                        // Writing the data failed, so either we
-                        // or the host are likely in a bad state.
-                        // We'll drop the Read transfer.
-                        info!("READ transfer failed - dropping READ");
-                        self.transfer = None;
-                    }
-                }
-            }
         }
     }
 
@@ -481,7 +402,7 @@ impl ProtocolHandler {
             // attempt to send a status response.
             CommandType::Write => {
                 info!("Host to WRITE {} bytes", command.len);
-                match Write::new(command.len) {
+                match Write::new(command) {
                     Ok(write) => self.transfer = Some(Transfer::Write(write)),
                     Err(status) => {
                         update_status(DisplayType::Error);
@@ -497,8 +418,33 @@ impl ProtocolHandler {
             // response.
             CommandType::Read => {
                 info!("Host to READ {} bytes", command.len);
-                match Read::new(command.len) {
-                    Ok(read) => self.transfer = Some(Transfer::Read(read)),
+                match Read::new(command) {
+                    Ok(read) => {
+                        let proto = read.protocol.clone();
+                        let len = read.len;
+                        self.transfer = Some(Transfer::Read(read));
+
+                        let result = match proto {
+                            ProtocolType::Cbm => {
+                                self.iec_driver.raw_read(len, &mut self.write_ep).await
+                            }
+                            _ => {
+                                error!("Unsupported read protocol: {:?}", proto);
+                                update_status(DisplayType::Error);
+                                Err(DriverError::Unsupported)
+                            }
+                        };
+
+                        match result {
+                            Ok(_) => info!("Sent READ response"),
+                            Err(_) => {
+                                info!("Failed to send READ response");
+                                update_status(DisplayType::Error);
+                            }
+                        }
+
+                        self.transfer = None;
+                    }
                     Err(_) => {
                         info!("Failed to handle READ - drop it");
                         update_status(DisplayType::Error);
@@ -526,11 +472,41 @@ impl ProtocolHandler {
         match write.receive_data(data, len) {
             Ok(_) => {
                 if let Some(status) = write.complete() {
-                    // Write complete - try to send a status response.
+                    // Write complete
                     info!("WRITE complete");
+
+                    // Execute the write using the correct protocol
+                    let result = match write.protocol {
+                        ProtocolType::Cbm => {
+                            self.iec_driver.raw_write(write.data, write.flags).await
+                        }
+                        _ => {
+                            error!("Unsupported protocol: {}", write.protocol);
+                            update_status(DisplayType::Error);
+                            Err(DriverError::Unsupported)
+                        }
+                    };
+
+                    // Set up the correct status response
+                    let status = match result {
+                        Ok(bytes) => {
+                            debug!("Sent WRITE response: {} bytes", bytes);
+                            status
+                        }
+                        Err(e) => {
+                            info!("Failed to handle WRITE {}", e);
+                            update_status(DisplayType::Error);
+                            Status {
+                                code: StatusCode::Error,
+                                value: 0,
+                            }
+                        }
+                    };
+
+                    // Send the status response.
                     match self.write_ep.write(&status.to_bytes()).await {
                         Ok(_) => info!("Sent WRITE response"),
-                        Err(_) => info!("Failed to send WRITE response"),
+                        Err(e) => error!("Failed to send WRITE response {}", e),
                     }
 
                     self.transfer = None
@@ -654,6 +630,9 @@ pub struct Command {
     // command packet.
     protocol: ProtocolType,
 
+    // Any protocol flags - these are only used when ProtocolType is Cbm
+    flags: ProtocolFlags,
+
     // The length of any data associated with the command.  This is encoded
     // in the third and fourth bytes of the command packet as a little endian
     // u16.
@@ -684,13 +663,33 @@ impl Command {
         // Get the command itself.
         let command = match CommandType::try_from(bytes[0]) {
             Ok(cmd) => cmd,
-            Err(_) => return Err(()),
+            Err(_) => {
+                info!("Unsupported command: 0x{:02x}", bytes[0]);
+                return Err(());
+            }
         };
 
         // Check the protocol is supported.
         let protocol = match ProtocolType::try_from(bytes[1]) {
             Ok(proto) => proto,
-            Err(_) => return Err(()),
+            Err(_) => {
+                info!("Unsupported protocol: 0x{:02x}", bytes[1]);
+                return Err(());
+            }
+        };
+
+        // Check the flags are supported.
+        let flags = match ProtocolFlags::try_from(bytes[1]) {
+            Ok(flags) => {
+                if flags.is_any() && protocol != ProtocolType::Cbm {
+                    return Err(());
+                }
+                flags
+            }
+            Err(_) => {
+                info!("Unsupported flags: 0x{:02x}", bytes[1]);
+                return Err(());
+            }
         };
 
         // Get the length of any data associated with this command.
@@ -700,6 +699,7 @@ impl Command {
         Ok(Self {
             command,
             protocol,
+            flags,
             len,
         })
     }
@@ -707,7 +707,7 @@ impl Command {
 
 /// Supported Bulk command protocols.
 #[repr(u8)]
-#[derive(Clone, defmt::Format)]
+#[derive(Clone, defmt::Format, PartialEq)]
 enum ProtocolType {
     Cbm = 0x10,
     S1 = 0x20,
@@ -734,8 +734,11 @@ impl ProtocolType {
 impl TryFrom<u8> for ProtocolType {
     type Error = ();
 
+    // Protocol is the high order nibble of the second byte of the command
+    // packet.
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
+        let check_value = value & 0xF0;
+        match check_value {
             0x10 => Ok(Self::Cbm),
             0x20 => Ok(Self::S1),
             0x30 => Ok(Self::S2),
@@ -749,6 +752,50 @@ impl TryFrom<u8> for ProtocolType {
             0xB0 => Ok(Self::TapConfig),
             _ => Err(()),
         }
+    }
+}
+
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Clone, Copy)]
+    pub struct ProtocolFlags: u8 {
+        const NONE = 0x00;
+        const CBM_TALK = 0x01;
+        const CBM_ATN = 0x02;
+    }
+}
+
+// Implement defmt::Format manually for ProtocolFlags
+impl defmt::Format for ProtocolFlags {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "ProtocolFlags({})", self.bits())
+    }
+}
+
+impl ProtocolFlags {
+    pub fn is_none(&self) -> bool {
+        self.is_empty()
+    }
+
+    pub fn is_any(&self) -> bool {
+        !self.is_none()
+    }
+
+    pub fn is_talk(&self) -> bool {
+        self.contains(Self::CBM_TALK)
+    }
+
+    pub fn is_atn(&self) -> bool {
+        self.contains(Self::CBM_ATN)
+    }
+}
+
+impl TryFrom<u8> for ProtocolFlags {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        let check_value = value & 0x0F;
+        ProtocolFlags::from_bits(check_value).ok_or(())
     }
 }
 

@@ -45,7 +45,7 @@ use constants::LOOP_LOG_INTERVAL;
 use dev_info::get_serial;
 use display::status_task;
 use gpio::Gpio;
-use task::{core0_spawn_or_reboot, core1_spawn};
+use task::{spawn_or_reboot, core1_spawn};
 use usb::{usb_task, UsbStack};
 use watchdog::{watchdog_task, Watchdog};
 
@@ -159,24 +159,23 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
 
     // Spawn the Status Display and USB tasks on core 0.
     //
-    // We do this before we start the watchdog, as we want to make sure the
-    // tasks are running and reading to feed it.  Feeding can happen before
-    // the watchdog is started, and registers can happen before or after it
-    // is started.  The tasks themselves register with the watchdog.  This is
-    // to allow them to deregister should that become necessary.
+    // It's fine to spawn the watchdog before the other tasks, because the
+    // other tasks themselves register with the watchdog when starting up.
+    // Therefore, they should be running and feeding the watchdog before it
+    // starts checking.
     //
     // See [`task.rs`] for an explanation of the multi-core strategy.
-    core0_spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
-    core0_spawn_or_reboot(spawner.spawn(usb_task(usb)), "USB");
+    spawn_or_reboot(spawner.spawn(watchdog_task()), "Watchdog");
+    spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
+    spawn_or_reboot(spawner.spawn(usb_task(usb)), "USB");
 
-    // Spawn the core1 task to start the Bulk task and hence the core
-    // Commodore protocol handling.
+    // Spawn the core1 task to start the Bulk task and the core Commodore
+    // protocol handling.
     core1_spawn(p_core1, bulk);
 
     // Finally, spawn the watchdog task.  This starts the hardware watchdog,
     // and our watchdog starts checking it's being fed by any registered
     // tasks.
-    core0_spawn_or_reboot(spawner.spawn(watchdog_task()), "Watchdog");
 
     let core = embassy_rp::pac::SIO.cpuid().read();
     loop {

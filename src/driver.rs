@@ -5,6 +5,10 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+use crate::protocol::ProtocolFlags;
+use embassy_rp::peripherals::USB;
+use embassy_rp::usb::{Endpoint, In};
+
 /// Defines errors for ProtocolDriver implementations.
 #[allow(dead_code)]
 #[derive(defmt::Format, Debug)]
@@ -15,6 +19,16 @@ pub enum DriverError {
     Resetting,
     /// Bus was occupied
     BusOccupied,
+    /// No devices detected
+    NoDevices,
+    /// No device detected
+    NoDevice,
+    /// IoError
+    Io,
+    /// Unsupported protocol or operation
+    Unsupported,
+    /// Internal error
+    Internal,
 }
 
 /// Defines the interface for Commodore protocol implementations.
@@ -37,16 +51,21 @@ pub trait ProtocolDriver {
     ///
     /// # Returns
     /// The number of bytes actually written or an error
-    async fn raw_write(&mut self, data: &[u8], flags: u8) -> Result<u16, DriverError>;
+    async fn raw_write(&mut self, data: &[u8], flags: ProtocolFlags) -> Result<u16, DriverError>;
 
     /// Read raw bytes from the bus.
     ///
     /// # Arguments
-    /// * `len` - Maximum number of bytes to read
+    /// * `read` - The Read objects
+    /// * `write_ep` - The endpoint to write data to
     ///
     /// # Returns
     /// The number of bytes actually read or an error
-    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError>;
+    async fn raw_read(
+        &mut self,
+        len: u16,
+        write_ep: &mut Endpoint<'static, USB, In>,
+    ) -> Result<u16, DriverError>;
 
     /// Wait for a specific bus line to reach the desired state.
     ///

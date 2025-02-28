@@ -39,11 +39,6 @@ pub const CORE1_WATCHDOG_TIMER: Duration = Duration::from_secs(10);
 // Task main runner and related timers.
 //
 
-/// Timer for the ProtocolHandler to pause between loops of its main runner.
-/// This is a low value, to ensure we apply Control driven changes quickly,
-/// and serve any outstanding data rapidly.
-pub const PROTOCOL_HANDLER_TIMER: Duration = Duration::from_millis(1);
-
 // Timer for the StatusDisplay spend on and off when blinking.
 pub const STATUS_DISPLAY_BLINK_TIMER: Duration = Duration::from_millis(100);
 
@@ -54,6 +49,12 @@ pub const STATUS_DISPLAY_TIMER: Duration = Duration::from_millis(50);
 // How often we aim to log from our primary loops to prove they are still
 // alive.
 pub const LOOP_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How long the bulk runner will wait for a data from the host before feeding
+/// the watchdog and letting ProtocolHanlder perform_action().  Doesn't need
+/// to be long as we just need to give read a chance to read data if some
+/// outstanding.
+pub const BULK_READ_TIMEOUT: Duration = Duration::from_millis(10);
 
 //
 // USB device configuration constants.

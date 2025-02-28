@@ -81,11 +81,11 @@ impl Gpio {
         // pass onto ProtocolHandler.
         let iec_bus = IecBus::new(
             // Clock in/out
-            pin_2, pin_3, // Data in/out
-            pin_4, pin_5, // SRQ in/out
+            pin_2, pin_3, // Clock in/out
+            pin_4, pin_5, // Data in/out
             pin_6, pin_7, // ATN in/out
             pin_8, pin_9, // RESET in/out
-            pin_10, pin_11,
+            pin_10, pin_11, // SRQ in/out
         );
 
         (iec_bus,)

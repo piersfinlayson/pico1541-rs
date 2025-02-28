@@ -9,20 +9,21 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 
-use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_futures::select::{select, Either};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In, Out};
-use embassy_time::{Instant, Timer};
+use embassy_time::{with_timeout, Instant, Timer};
 use embassy_usb::driver::{Endpoint as DriverEndpoint, EndpointOut};
 use static_cell::StaticCell;
 
 use crate::constants::{
-    BULK_WATCHDOG_TIMER, LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE, MAX_WRITE_SIZE_USIZE,
+    BULK_READ_TIMEOUT, BULK_WATCHDOG_TIMER, LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE,
+    MAX_WRITE_SIZE_USIZE,
 };
 use crate::display::{update_status, DisplayType};
 use crate::iec::IecBus;
 use crate::protocol::ProtocolHandler;
-use crate::watchdog::{feed_watchdog, reboot_normal, register_task, TaskId};
+use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
 // The BULK static contains our Bulk data handling object, which  a
 // Protocol Handler object.
@@ -121,50 +122,48 @@ impl Bulk {
                         next_log_instant = now + LOOP_LOG_INTERVAL;
                     }
 
+                    // Give the protocol handler time to do perform any
+                    // outstanding action from the control handler.
+                    self.protocol.perform_action().await;
+
                     // Set up a buffer to read data into.
                     let mut data = [0; MAX_EP_PACKET_SIZE as usize];
 
+                    // Now attempt to read some data for a bit.  We'll run
+                    // a timeout at the same time, so we can stop and feed
+                    // the watchdog, then restart the loop again.
                     // Again, we need to pause from waiting for data, so we
                     // can feed the watchdog.
-                    let either = select3(
-                        self.read_ep.read(&mut data),
-                        self.protocol.run(),
-                        Timer::after(BULK_WATCHDOG_TIMER),
-                    )
-                    .await;
+                    match with_timeout(BULK_READ_TIMEOUT, self.read_ep.read(&mut data)).await {
+                        Ok(result) => {
+                            match result {
+                                Ok(size) => {
+                                    // We got bulk data.  Handle it.
+                                    if size <= MAX_WRITE_SIZE_USIZE {
+                                        self.protocol.received_data(&data, size as u16).await;
+                                    } else {
+                                        info!(
+                                            "Received more data than we can handle {} bytes - dropping",
+                                            size
+                                        );
+                                    }
 
-                    // Feed the watchog before doing anything else.
-                    feed_watchdog(TaskId::Bulk);
-
-                    if let Either3::First(Ok(size)) = either {
-                        // We got bulk data.  Handle it.
-                        if size <= MAX_WRITE_SIZE_USIZE {
-                            self.protocol.received_data(&data, size as u16).await;
-                        } else {
-                            info!(
-                                "Received more data than we can handle {} bytes - dropping",
-                                size
-                            );
+                                    debug!("Successfully handled {} bytes from OUT endpoint", size);
+                                }
+                                Err(e) => {
+                                    // This occurs if the endpoint is disabled
+                                    error!("Error reading from OUT endpoint: {:?}", e);
+                                    break;
+                                }
+                            }
                         }
-
-                        info!("Successfully handled {} bytes from OUT endpoint", size);
-
-                        // Try to read more data
-                        continue;
-                    } else if let Either3::Second(_) = either {
-                        // Protocol handler exited.  It shouldn't do that.
-                        info!("Protocol handler exited - resetting");
-
-                        // Trigger a reset
-                        reboot_normal();
-                    } else if let Either3::Third(_) = either {
-                        // The timer expired, so try and read data again.
-                        continue;
+                        Err(_) => {
+                            // We hit a timeout reading.  That's fine an
+                            // expected.
+                        }
                     }
 
-                    // We hit an error reading, so we're done reading from
-                    // the endpoint.
-                    break;
+                    feed_watchdog(TaskId::Bulk);
                 }
 
                 update_status(DisplayType::Init);

@@ -69,6 +69,7 @@ cortex-m = { version = "0.7.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 
+bitflags = "2.8"
 rp2040-rom = "0.1.1"
 
 [build-dependencies]

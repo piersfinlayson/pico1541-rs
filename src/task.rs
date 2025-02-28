@@ -6,7 +6,7 @@
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_executor::Executor;
+use embassy_executor::{Executor, Spawner};
 use embassy_rp::multicore::{spawn_core1 as rp_spawn_core1, Stack};
 use embassy_rp::peripherals::CORE1;
 use static_cell::StaticCell;
@@ -60,8 +60,23 @@ static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 pub fn core1_spawn(p_core1: CORE1, bulk: &'static mut Bulk) {
     rp_spawn_core1(p_core1, unsafe { &mut CORE1_STACK }, move || {
         let executor1 = EXECUTOR1.init(Executor::new());
-        executor1.run(|spawner| spawner.spawn(core1_task(bulk)).unwrap())
+        executor1.run(|mut spawner| core1_main(&mut spawner, bulk))
     });
+}
+
+pub fn core1_main(spawner: &Spawner, bulk: &'static mut Bulk) {
+    let core: u32 = embassy_rp::pac::SIO.cpuid().read();
+    info!("Core{}: Core 1 main started", core);
+
+    spawn_or_reboot(spawner.spawn(core1_dummy()), "core1_dummy");
+
+    spawner.spawn(core1_task(bulk)).unwrap();
+
+}
+
+#[embassy_executor::task]
+async fn core1_dummy() -> ! {
+    loop {}
 }
 
 #[embassy_executor::task]
@@ -72,7 +87,7 @@ async fn core1_task(bulk: &'static mut Bulk) -> ! {
     bulk.run().await;
 }
 
-/// Method to spawn tasks on core 0.
+/// Method to spawn tasks.  Can be called on either core.
 ///
 /// Using the Spawner object to spawn can fail, presumably because some memory
 /// must be allocated.  We handle that by rebooting - but it shouldn't happen
@@ -82,7 +97,7 @@ async fn core1_task(bulk: &'static mut Bulk) -> ! {
 /// ```ignore
 /// spawn_or_reboot(spawner.spawn(my_task()), "my_task");
 /// ```
-pub fn core0_spawn_or_reboot<T, E: defmt::Format>(spawn_result: Result<T, E>, task_name: &str) {
+pub fn spawn_or_reboot<T, E: defmt::Format>(spawn_result: Result<T, E>, task_name: &str) {
     match spawn_result {
         Ok(_) => {
             let core: u32 = embassy_rp::pac::SIO.cpuid().read();
