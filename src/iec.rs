@@ -85,11 +85,14 @@ const WAIT_INTERVAL: Duration = Duration::from_micros(1);
 // So, where the precise timing is critical, we use Delay.delay*(), using the
 // delay_block_us!() macro.  Where we can tolerate a longer delay if required,
 // we use the delay_yield_*!() macros.
+//
+// Irrespective of which macro is used, this module must ensure watchdog is
+// fed, should it be delaying for a long time.
 
 // Brief delay to allow lines to settle
 macro_rules! iec_delay {
     () => {
-        Timer::after_micros(2).await
+        Delay.delay_us(2)
     };
 }
 
@@ -378,6 +381,7 @@ pub struct IecDriver {
 }
 
 impl ProtocolDriver for IecDriver {
+    /// Timing is not critical here, so we use delay_yield.
     async fn reset(&mut self, forever: bool) -> Result<(), DriverError> {
         debug!("reset");
         self.bus.release_lines(IO_DATA | IO_ATN | IO_CLK | IO_SRQ);
@@ -400,6 +404,9 @@ impl ProtocolDriver for IecDriver {
         result
     }
 
+    /// Read data from the IEC bus
+    ///
+    /// Timing is critical in this function, so we use delay_block_us.
     async fn raw_read(
         &mut self,
         len: u16,
@@ -492,6 +499,9 @@ impl ProtocolDriver for IecDriver {
         Ok(count)
     }
 
+    /// Send data to the drive
+    ///
+    /// Timing is critical in this function, so we use delay_block_us.
     async fn raw_write(&mut self, data: &[u8], flags: ProtocolFlags) -> Result<u16, DriverError> {
         let atn = flags.is_atn();
         let talk = flags.is_talk();
@@ -590,7 +600,7 @@ impl ProtocolDriver for IecDriver {
             // device is used for embassy-time time at a tick rate of 1MHz.  So,
             // timers less than 1us are not possible.
             delay_block_us!(0); // try a similar trick
-                                //delay_yield_us!(IEC_T_TK).await;
+                                //delay_block_us!(IEC_T_TK).await;
 
             // Release CLK and wait for device to grab it
             self.bus.release_lines(IO_CLK);
@@ -608,6 +618,8 @@ impl ProtocolDriver for IecDriver {
         Ok(count)
     }
 
+    // As this is wait forever, timing witht he loop isn't critical, so we use
+    // delay_yield.
     async fn wait(&mut self, line: u8, state: u8) -> Result<(), DriverError> {
         let hw_mask = self.iec2hw(line);
         let hw_state = if state != 0 { hw_mask } else { 0 };
@@ -659,6 +671,8 @@ impl IecDriver {
     }
 
     /// Wait for listener to release DATA line
+    ///
+    /// Timing is not critical here so use delay_yield.
     async fn wait_for_listener(&mut self) -> bool {
         // Release CLK to indicate we're ready to send
         self.bus.release_lines(IO_CLK);
@@ -676,6 +690,8 @@ impl IecDriver {
     }
 
     /// Send a byte, one bit at a time via the IEC protocol
+    ///
+    /// Timing is critical here, so we use delay_block_us.
     async fn send_byte(&mut self, b: u8) -> bool {
         let mut data = b;
 
@@ -740,7 +756,10 @@ impl IecDriver {
         Ok(byte)
     }
 
-    /// Wait up to 2ms for lines to reach specified state
+    /// Wait up to 2ms for lines to reach specified state.
+    ///
+    /// Timing is considered critical here to wait for around 2ms.  Hence we
+    /// use delay_block_us.
     async fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
         for _ in 0..200 {
             if (self.bus.poll_pins() & mask) != state {
@@ -752,6 +771,8 @@ impl IecDriver {
     }
 
     /// Wait for the bus to be free
+    ///
+    /// Timing is not criticial here, so we use delay_yield.
     async fn wait_for_free_bus(&mut self, forever: bool) -> Result<(), DriverError> {
         async fn check_bus_until_free(device: &mut IecDriver) -> Result<(), DriverError> {
             loop {
@@ -790,27 +811,28 @@ impl IecDriver {
 
     /// Check if the bus is free
     /// We aim for every exit path to take 200us.
+    /// Timing is important, to achieve this 200us, so we use delay_block.
     async fn check_if_bus_free(&mut self) -> bool {
         // Release all lines and wait for drive reaction time
         self.bus.release_lines(IO_ATN | IO_CLK | IO_DATA | IO_RESET);
-        delay_yield_us!(50);
+        delay_block_us!(50);
 
         // If DATA is held, drive is not yet ready
         if self.bus.get_data() {
-            delay_yield_us!(150);
+            delay_block_us!(150);
             return false;
         }
 
         // Ensure DATA is stable
         delay_yield_us!(50);
         if self.bus.get_data() {
-            delay_yield_us!(100);
+            delay_block_us!(100);
             return false;
         }
 
         // Assert ATN and wait for drive reaction
         self.bus.set_lines(IO_ATN);
-        delay_yield_us!(100);
+        delay_block_us!(100);
 
         // If DATA is still unset, no drive answered
         if !self.bus.get_data() {
@@ -820,7 +842,7 @@ impl IecDriver {
 
         // Test releasing ATN
         self.bus.release_lines(IO_ATN);
-        delay_yield_us!(100);
+        delay_block_us!(100);
 
         // Check if drive released DATA
         !self.bus.get_data()
