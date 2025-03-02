@@ -56,7 +56,6 @@ embassy-sync = { version = "0.6", features = ["defmt"] }
 embassy-time = { version = "0.4", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-boot = { version = "0.4" }
 static_cell = { version = "2.1" }
-portable-atomic = { version = "1.10", features = ["critical-section"] }
 heapless = { version = "0.8" }
 
 cyw43 = { version = "0.3", features = ["defmt", "firmware-logs"] }
