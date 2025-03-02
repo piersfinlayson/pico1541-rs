@@ -564,7 +564,7 @@ impl ProtocolHandler {
     // process.
     // TO DO - don't just read all written data into a massive WRITE buffer.
     // Instead keep it close by ready to feed to IecDriver when it asks for
-    // it. 
+    // it.
     async fn handle_data(&mut self) {
         // See if there's any data on Channel
         match WRITE_DATA_CHANNEL.try_receive() {

@@ -137,7 +137,7 @@ pub enum TaskId {
     // We cannot police USB as it needs to run permanently.  The same goes
     // for the Bulk task - it calls the IN endpoint read().  Technically
     // we probably could cancel it to feed the watchdog, but we will trust
-    // it and the USB stack not to lock up the device. 
+    // it and the USB stack not to lock up the device.
 
     // Add any other tasks here
     // ...

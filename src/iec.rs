@@ -10,7 +10,7 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Input, Level, Output, Pin, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
-use embassy_time::{with_timeout, Duration, Timer, Delay};
+use embassy_time::{with_timeout, Delay, Duration, Timer};
 use embassy_usb::driver::EndpointIn;
 use embedded_hal::delay::DelayNs;
 
@@ -73,14 +73,47 @@ const BUS_FREE_TIMEOUT: Duration = Duration::from_millis(1500);
 const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(10);
 const WAIT_INTERVAL: Duration = Duration::from_micros(1);
 
+// Timer macros, used for simple inlines.
 //
-// Macros, used for simple inlines.
+// We have two choices for a delay:
+// * Delay.delay_*() - blocks the current core for the duration indicated.
+//   This is useful if we want precise timing.
+// * Timer::after_*() - yields to the executor for the duration indicated.
+//   Because the executor will schedule something else during the yield, it is
+//   possible that the pause will be longer than required.
 //
+// So, where the precise timing is critical, we use Delay.delay*(), using the
+// delay_block_us!() macro.  Where we can tolerate a longer delay if required,
+// we use the delay_yield_*!() macros.
 
 // Brief delay to allow lines to settle
 macro_rules! iec_delay {
     () => {
         Timer::after_micros(2).await
+    };
+}
+
+// Blocking delay for a specified time
+macro_rules! delay_block_us {
+    ($us:expr) => {
+        Delay.delay_us($us)
+    };
+}
+
+// Yielding delay for a specified time
+macro_rules! delay_yield_us {
+    ($us:expr) => {
+        Timer::after_micros($us).await
+    };
+}
+macro_rules! delay_yield_ms {
+    ($ms:expr) => {
+        Timer::after_micros($ms).await
+    };
+}
+macro_rules! delay_yield {
+    ($dur:expr) => {
+        Timer::after($dur).await
     };
 }
 
@@ -356,7 +389,7 @@ impl ProtocolDriver for IecDriver {
         // Hold reset line active
         self.bus.set_reset();
         debug!("Reset: set_reset() done");
-        Delay.delay_ms(100);
+        delay_yield_ms!(100);
         debug!("Reset: release_reset()");
         self.bus.release_reset();
 
@@ -391,7 +424,7 @@ impl ProtocolDriver for IecDriver {
                     return Err(DriverError::Timeout);
                 }
                 timeout += 1;
-                Delay.delay_us(20);
+                delay_block_us!(20);
 
                 if self.check_abort() {
                     return Err(DriverError::Resetting);
@@ -411,14 +444,14 @@ impl ProtocolDriver for IecDriver {
             let mut wait_count = 200;
             while !self.bus.get_clock() && wait_count > 0 {
                 wait_count -= 1;
-                Delay.delay_us(2);
+                delay_block_us!(2);
             }
 
             // Check for EOI signalling from talker
             if !self.bus.get_clock() {
                 self.eoi = true;
                 self.bus.set_data();
-                Delay.delay_us(70);
+                delay_block_us!(70);
                 self.bus.release_data();
             }
 
@@ -433,7 +466,7 @@ impl ProtocolDriver for IecDriver {
                     buf_count += 1;
                     count += 1;
 
-                    Delay.delay_us(50);
+                    delay_block_us!(50);
                 }
                 Err(e) => {
                     error!("Raw read: error receiving byte");
@@ -507,7 +540,7 @@ impl ProtocolDriver for IecDriver {
 
         // Wait for drive to be ready for us to release CLK.  The tranfer
         // starts to be unreliable below 10 us.
-        Delay.delay_us(IEC_T_NE);
+        delay_block_us!(IEC_T_NE);
 
         // Send bytes as soon as the device is ready
         let mut count = 0;
@@ -536,7 +569,7 @@ impl ProtocolDriver for IecDriver {
             // Send the byte
             if self.send_byte(byte).await {
                 count += 1;
-                Delay.delay_us(IEC_T_BB);
+                delay_block_us!(IEC_T_BB);
             } else {
                 error!("Raw write: io err");
                 // TODO - async read handling
@@ -556,8 +589,8 @@ impl ProtocolDriver for IecDriver {
             // time-driver feature is enabled (which it is), the RP2040 TIMER
             // device is used for embassy-time time at a tick rate of 1MHz.  So,
             // timers less than 1us are not possible.
-            Delay.delay_us(0); // try a similar trick
-                            //Timer::after_micros(IEC_T_TK).await;
+            delay_block_us!(0); // try a similar trick
+                                //delay_yield_us!(IEC_T_TK).await;
 
             // Release CLK and wait for device to grab it
             self.bus.release_lines(IO_CLK);
@@ -586,7 +619,7 @@ impl ProtocolDriver for IecDriver {
                 return Err(DriverError::Resetting);
             }
 
-            Timer::after(WAIT_INTERVAL).await;
+            delay_yield!(WAIT_INTERVAL);
         }
 
         Ok(())
@@ -635,7 +668,7 @@ impl IecDriver {
             if self.check_abort() {
                 return false;
             }
-            Timer::after(LISTENER_WAIT_INTERVAL).await;
+            delay_yield!(LISTENER_WAIT_INTERVAL);
             feed_watchdog(TaskId::ProtocolHandler);
         }
 
@@ -648,17 +681,17 @@ impl IecDriver {
 
         for _ in 0..8 {
             // Wait for setup time
-            Delay.delay_us(IEC_T_S + 55);
+            delay_block_us!(IEC_T_S + 55);
 
             // Set the bit value on the DATA line
             if (data & 1) == 0 {
                 self.bus.set_lines(IO_DATA);
-                Delay.delay_us(2);
+                delay_block_us!(2);
             }
 
             // Trigger clock edge and hold valid for specified time
             self.bus.release_lines(IO_CLK);
-            Delay.delay_us(IEC_T_V);
+            delay_block_us!(IEC_T_V);
 
             // Prepare for next bit
             self.set_release(IO_CLK, IO_DATA).await;
@@ -713,7 +746,7 @@ impl IecDriver {
             if (self.bus.poll_pins() & mask) != state {
                 return true;
             }
-            Timer::after_micros(10).await;
+            delay_block_us!(10);
         }
         self.bus.poll_pins() & mask != state
     }
@@ -733,7 +766,7 @@ impl IecDriver {
                 }
 
                 // Wait so we don't tight loop
-                Timer::after(BUS_FREE_CHECK_INTERVAL).await;
+                delay_yield!(BUS_FREE_CHECK_INTERVAL);
 
                 // Feed the bus
                 feed_watchdog(TaskId::ProtocolHandler);
@@ -760,24 +793,24 @@ impl IecDriver {
     async fn check_if_bus_free(&mut self) -> bool {
         // Release all lines and wait for drive reaction time
         self.bus.release_lines(IO_ATN | IO_CLK | IO_DATA | IO_RESET);
-        Timer::after_micros(50).await;
+        delay_yield_us!(50);
 
         // If DATA is held, drive is not yet ready
         if self.bus.get_data() {
-            Timer::after_micros(150).await;
+            delay_yield_us!(150);
             return false;
         }
 
         // Ensure DATA is stable
-        Timer::after_micros(50).await;
+        delay_yield_us!(50);
         if self.bus.get_data() {
-            Timer::after_micros(100).await;
+            delay_yield_us!(100);
             return false;
         }
 
         // Assert ATN and wait for drive reaction
         self.bus.set_lines(IO_ATN);
-        Timer::after_micros(100).await;
+        delay_yield_us!(100);
 
         // If DATA is still unset, no drive answered
         if !self.bus.get_data() {
@@ -787,7 +820,7 @@ impl IecDriver {
 
         // Test releasing ATN
         self.bus.release_lines(IO_ATN);
-        Timer::after_micros(100).await;
+        delay_yield_us!(100);
 
         // Check if drive released DATA
         !self.bus.get_data()

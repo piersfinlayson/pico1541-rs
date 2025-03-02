@@ -110,7 +110,7 @@ async fn core1_task(bulk: &'static mut Bulk) -> ! {
 /// Using the Spawner object to spawn can fail, becayse too many instances of
 /// that task are already running.  By default only 1 is alllowed at once, but
 /// is configurable with e.g. #[embassy_executor::task(pool_size = 4).
-/// 
+///
 /// We handle that by rebooting - but it shouldn't happen if processes are only
 /// spawned at start of day.
 ///
