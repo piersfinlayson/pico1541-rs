@@ -11,7 +11,7 @@ use embassy_rp::multicore::{spawn_core1 as rp_spawn_core1, Stack};
 use embassy_rp::peripherals::{CORE1, USB};
 use embassy_rp::usb::{Endpoint, In};
 use static_cell::StaticCell;
-
+    
 use crate::bulk::Bulk;
 use crate::constants::CORE1_STACK_SIZE;
 use crate::iec::IecBus;
@@ -52,9 +52,7 @@ use crate::watchdog::reboot_normal;
 // Statics
 //
 
-// A stack for core 1.  We're not wrapping it in anything, but we'll use an
-// unsafe block when we retrieve this in spawn_core1().  This is a private
-// static so no other modules can access it.
+// A stack for core 1.  We will use it (unsafely) mutably in core1_spawn. 
 static mut CORE1_STACK: Stack<CORE1_STACK_SIZE> = Stack::new();
 
 // An executor for core 1.
