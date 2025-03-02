@@ -10,7 +10,7 @@ use embassy_executor::{Executor, Spawner};
 use embassy_rp::multicore::{spawn_core1 as rp_spawn_core1, Stack};
 use embassy_rp::peripherals::{CORE1, USB};
 use embassy_rp::usb::{Endpoint, In};
-use static_cell::StaticCell;
+use static_cell::{StaticCell, ConstStaticCell};
     
 use crate::bulk::Bulk;
 use crate::constants::CORE1_STACK_SIZE;
@@ -52,8 +52,8 @@ use crate::watchdog::reboot_normal;
 // Statics
 //
 
-// A stack for core 1.  We will use it (unsafely) mutably in core1_spawn. 
-static mut CORE1_STACK: Stack<CORE1_STACK_SIZE> = Stack::new();
+// A stack for core 1.  We will take it and use it mutably in core1_spawn. 
+static CORE1_STACK: ConstStaticCell<Stack<CORE1_STACK_SIZE>> = ConstStaticCell::new(Stack::new());
 
 // An executor for core 1.
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
@@ -68,7 +68,8 @@ pub fn core1_spawn(
     iec_bus: IecBus,
     write_ep: Endpoint<'static, USB, In>,
 ) {
-    rp_spawn_core1(p_core1, unsafe { &mut CORE1_STACK }, move || {
+    let core1_stack = CORE1_STACK.take();
+    rp_spawn_core1(p_core1, core1_stack, move || {
         let executor1 = EXECUTOR1.init(Executor::new());
         executor1.run(|spawner| core1_main(&spawner, bulk, iec_bus, write_ep))
     });
