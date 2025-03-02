@@ -78,6 +78,10 @@ impl Bulk {
 
                 // Now read in data.  Again, we can block here and run forever
                 // as we are not being policed by the watchdog.
+                //
+                // Strictly, we can probably call read() in a select or similar
+                // as read() appears to be cancel safe - that is it does't
+                // lose data if the task is cancelled.
                 match self.read_ep.read(&mut data).await {
                     Ok(size) => {
                         // We got bulk data.  Handle it.
