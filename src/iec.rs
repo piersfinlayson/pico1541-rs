@@ -10,8 +10,9 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Input, Level, Output, Pin, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_time::{with_timeout, Duration, Timer, Delay};
 use embassy_usb::driver::EndpointIn;
+use embedded_hal::delay::DelayNs;
 
 use crate::constants::MAX_EP_PACKET_SIZE;
 use crate::display::{update_status, DisplayType};
@@ -19,22 +20,22 @@ use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::ProtocolFlags;
 use crate::watchdog::{feed_watchdog, TaskId};
 
-const IEC_T_AT: u64 = 1000; // Max ATN response required time (us)
+const IEC_T_AT: u32 = 1000; // Max ATN response required time (us)
                             //      IEC_T_H     inf  // Max listener hold-off time
-const IEC_T_NE: u64 = 40; // Typical non-EOI response to RFD time (us)
-const IEC_T_S: u64 = 20; // Min talker bit setup time (us, 70 typical)
-const IEC_T_V: u64 = 20; // Min data valid time (us, 20 typical)
-const IEC_T_F: u64 = 1000; // Max frame handshake time (us, 20 typical)
-const IEC_T_R: u64 = 20; // Min frame to release of ATN time (us)
-const IEC_T_BB: u64 = 100; // Min time between bytes (us)
-const IEC_T_YE: u64 = 200; // Min EOI response time (us, 250 typical)
-const IEC_T_EI: u64 = 60; // Min EOI response hold time (us)
-const IEC_T_RY: u64 = 60; // Max talker response limit (us, 30 typical)
-const IEC_T_PR: u64 = 20; // Min byte acknowledge hold time (us, 30 typical)
-                          //const IEC_T_TK: u64 = -1;   // 20/30/100 talk-attention release time (us)
+const IEC_T_NE: u32 = 40; // Typical non-EOI response to RFD time (us)
+const IEC_T_S: u32 = 20; // Min talker bit setup time (us, 70 typical)
+const IEC_T_V: u32 = 20; // Min data valid time (us, 20 typical)
+const IEC_T_F: u32 = 1000; // Max frame handshake time (us, 20 typical)
+const IEC_T_R: u32 = 20; // Min frame to release of ATN time (us)
+const IEC_T_BB: u32 = 100; // Min time between bytes (us)
+const IEC_T_YE: u32 = 200; // Min EOI response time (us, 250 typical)
+const IEC_T_EI: u32 = 60; // Min EOI response hold time (us)
+const IEC_T_RY: u32 = 60; // Max talker response limit (us, 30 typical)
+const IEC_T_PR: u32 = 20; // Min byte acknowledge hold time (us, 30 typical)
+                          //const IEC_T_TK: u32 = -1;   // 20/30/100 talk-attention release time (us)
                           //      IEC_T_DC    inf  // Talk-attention acknowledge time, 0 - inf
-const IEC_T_DA: u64 = 80; // Min talk-attention ack hold time (us)
-const IEC_T_FR: u64 = 60; // Min EOI acknowledge time (us)
+const IEC_T_DA: u32 = 80; // Min talk-attention ack hold time (us)
+const IEC_T_FR: u32 = 60; // Min EOI acknowledge time (us)
 
 // An object representing the physical IEC bus.  Each Line is a pair of
 // pins, one input and one output.
@@ -80,27 +81,6 @@ const WAIT_INTERVAL: Duration = Duration::from_micros(1);
 macro_rules! iec_delay {
     () => {
         Timer::after_micros(2).await
-    };
-}
-
-// Delay the specificied number of microseconds
-macro_rules! delay_ms {
-    ($time:expr) => {
-        Timer::after_millis($time).await
-    };
-}
-
-// Delay the specificied number of microseconds
-macro_rules! delay_us {
-    ($time:expr) => {
-        Timer::after_micros($time).await
-    };
-}
-
-// Delay the specificied number of nanoseconds
-macro_rules! delay_ns {
-    ($time:expr) => {
-        Timer::after_nanos($time).await
     };
 }
 
@@ -376,7 +356,7 @@ impl ProtocolDriver for IecDriver {
         // Hold reset line active
         self.bus.set_reset();
         debug!("Reset: set_reset() done");
-        delay_ms!(100);
+        Delay.delay_ms(100);
         debug!("Reset: release_reset()");
         self.bus.release_reset();
 
@@ -411,7 +391,7 @@ impl ProtocolDriver for IecDriver {
                     return Err(DriverError::Timeout);
                 }
                 timeout += 1;
-                delay_us!(20);
+                Delay.delay_us(20);
 
                 if self.check_abort() {
                     return Err(DriverError::Resetting);
@@ -431,14 +411,14 @@ impl ProtocolDriver for IecDriver {
             let mut wait_count = 200;
             while !self.bus.get_clock() && wait_count > 0 {
                 wait_count -= 1;
-                delay_us!(2);
+                Delay.delay_us(2);
             }
 
             // Check for EOI signalling from talker
             if !self.bus.get_clock() {
                 self.eoi = true;
                 self.bus.set_data();
-                delay_us!(70);
+                Delay.delay_us(70);
                 self.bus.release_data();
             }
 
@@ -453,7 +433,7 @@ impl ProtocolDriver for IecDriver {
                     buf_count += 1;
                     count += 1;
 
-                    delay_us!(50);
+                    Delay.delay_us(50);
                 }
                 Err(e) => {
                     error!("Raw read: error receiving byte");
@@ -527,7 +507,7 @@ impl ProtocolDriver for IecDriver {
 
         // Wait for drive to be ready for us to release CLK.  The tranfer
         // starts to be unreliable below 10 us.
-        delay_us!(IEC_T_NE);
+        Delay.delay_us(IEC_T_NE);
 
         // Send bytes as soon as the device is ready
         let mut count = 0;
@@ -556,7 +536,7 @@ impl ProtocolDriver for IecDriver {
             // Send the byte
             if self.send_byte(byte).await {
                 count += 1;
-                delay_us!(IEC_T_BB);
+                Delay.delay_us(IEC_T_BB);
             } else {
                 error!("Raw write: io err");
                 // TODO - async read handling
@@ -571,8 +551,12 @@ impl ProtocolDriver for IecDriver {
             // Hold DATA and release ATN
             self.set_release(IO_DATA, IO_ATN).await;
             // IEC_T_TK was defined to be -1 in the original C code which
-            // presumably meant to make the delay sub micro-second.  We'll oblige.
-            delay_ns!(375); // guess
+            // presumably meant to make the delay sub micro-second.  We'll try
+            // to oblige.  The embassy-rp documentation indicates that when
+            // time-driver feature is enabled (which it is), the RP2040 TIMER
+            // device is used for embassy-time time at a tick rate of 1MHz.  So,
+            // timers less than 1us are not possible.
+            Delay.delay_us(0); // try a similar trick
                             //Timer::after_micros(IEC_T_TK).await;
 
             // Release CLK and wait for device to grab it
@@ -664,17 +648,17 @@ impl IecDriver {
 
         for _ in 0..8 {
             // Wait for setup time
-            delay_us!(IEC_T_S + 55);
+            Delay.delay_us(IEC_T_S + 55);
 
             // Set the bit value on the DATA line
             if (data & 1) == 0 {
                 self.bus.set_lines(IO_DATA);
-                delay_us!(2);
+                Delay.delay_us(2);
             }
 
             // Trigger clock edge and hold valid for specified time
             self.bus.release_lines(IO_CLK);
-            delay_us!(IEC_T_V);
+            Delay.delay_us(IEC_T_V);
 
             // Prepare for next bit
             self.set_release(IO_CLK, IO_DATA).await;

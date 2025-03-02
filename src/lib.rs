@@ -39,7 +39,7 @@ mod watchdog;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
-use embassy_time::Timer;
+use embassy_time::Ticker;
 
 use constants::LOOP_LOG_INTERVAL;
 use dev_info::get_serial;
@@ -178,8 +178,9 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // tasks.
 
     let core = embassy_rp::pac::SIO.cpuid().read();
+    let mut ticker = Ticker::every(LOOP_LOG_INTERVAL);
     loop {
         info!("Core{}: Main loop", core);
-        Timer::after(LOOP_LOG_INTERVAL).await;
+        ticker.next().await;
     }
 }

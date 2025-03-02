@@ -49,7 +49,7 @@ required-features = ["pico1541w"]
 
 [dependencies]
 embassy-executor = { version = "0.7", features = ["task-arena-size-98304", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-rp = { version = "0.3", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
+embassy-rp = { version = "0.3", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040", "intrinsics"] }
 embassy-usb = { version = "0.4", features = ["defmt"] }
 embassy-futures = { version = "0.1" }
 embassy-sync = { version = "0.6", features = ["defmt"] }
@@ -68,6 +68,8 @@ defmt-rtt = "0.4"
 cortex-m = { version = "0.7.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+embedded-hal = "1.0"
 
 bitflags = "2.8"
 rp2040-rom = "0.1.1"

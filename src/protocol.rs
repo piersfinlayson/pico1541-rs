@@ -605,7 +605,7 @@ pub async fn protocol_handler_task(iec_bus: IecBus, write_ep: Endpoint<'static, 
         let now = Instant::now();
         if now >= next_log_instant {
             info!("Core{}: Protocol loop", protocol_handler.core);
-            next_log_instant = now + LOOP_LOG_INTERVAL;
+            next_log_instant += LOOP_LOG_INTERVAL;
         }
 
         // Feed the watchdog

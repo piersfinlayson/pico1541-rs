@@ -83,7 +83,7 @@ impl Bulk {
                         // We got bulk data.  Handle it.
                         if size <= MAX_WRITE_SIZE_USIZE {
                             // This call will block if the channel is full -
-                            // i.e. the ProtocolHnadler is not keeping up.
+                            // i.e. the ProtocolHandler is not keeping up.
                             // This will in turn stop us reading in more USB
                             // and hence provide back-pressure.
                             WRITE_DATA_CHANNEL.send((size, data)).await;

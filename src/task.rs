@@ -10,7 +10,6 @@ use embassy_executor::{Executor, Spawner};
 use embassy_rp::multicore::{spawn_core1 as rp_spawn_core1, Stack};
 use embassy_rp::peripherals::{CORE1, USB};
 use embassy_rp::usb::{Endpoint, In};
-use embassy_time::Timer;
 use static_cell::StaticCell;
 
 use crate::bulk::Bulk;
@@ -33,7 +32,7 @@ use crate::watchdog::reboot_normal;
 // In the future, it is expected that core 0 will also gain WiFi and any other
 // support.
 //
-// Core 1 handles bulk USB transfers and all Commodore protoco; handling.  This
+// Core 1 handles bulk USB transfers and all Commodore protocol handling.  This
 // is an improvement over the situation on the stock xum1541, which only has a
 // single core.  Hence the USB stack itself, control handling and the status
 // LED are all handled on the same core as the protocol support.
@@ -48,6 +47,10 @@ use crate::watchdog::reboot_normal;
 // Therefore, for consistency between the cores, we spawn tasks on voth cores
 // using Executors.  These are stored by non-public statics, and hence can
 // only be access via this module, which improved safety.
+
+//
+// Statics
+//
 
 // A stack for core 1.  We're not wrapping it in anything, but we'll use an
 // unsafe block when we retrieve this in spawn_core1().  This is a private
@@ -95,13 +98,6 @@ pub fn core1_main(
 }
 
 #[embassy_executor::task]
-async fn core1_dummy() -> ! {
-    loop {
-        Timer::after_micros(1000).await;
-    }
-}
-
-#[embassy_executor::task]
 async fn core1_task(bulk: &'static mut Bulk) -> ! {
     let core: u32 = embassy_rp::pac::SIO.cpuid().read();
     info!("Core{}: Bulk task started", core);
@@ -111,9 +107,12 @@ async fn core1_task(bulk: &'static mut Bulk) -> ! {
 
 /// Method to spawn tasks.  Can be called on either core.
 ///
-/// Using the Spawner object to spawn can fail, presumably because some memory
-/// must be allocated.  We handle that by rebooting - but it shouldn't happen
-/// if processes are only spawned at start of day.
+/// Using the Spawner object to spawn can fail, becayse too many instances of
+/// that task are already running.  By default only 1 is alllowed at once, but
+/// is configurable with e.g. #[embassy_executor::task(pool_size = 4).
+/// 
+/// We handle that by rebooting - but it shouldn't happen if processes are only
+/// spawned at start of day.
 ///
 /// Example:
 /// ```ignore
