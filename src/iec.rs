@@ -564,7 +564,7 @@ impl ProtocolDriver for IecDriver {
         // First, check if any device is present on the bus
         if !self.wait_timeout_2ms(IO_ATN | IO_RESET, 0).await {
             error!("Raw Write: No devices present on the bus");
-            debug!("pool pins 0x{:02x}", self.bus.poll_pins());
+            debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
             // TO DO - async read handling
             return Err(DriverError::NoDevices);
         }
@@ -582,7 +582,7 @@ impl ProtocolDriver for IecDriver {
         // This should be IEC_T_AT (1ms) but allow a bit longer
         if !self.wait_timeout_2ms(IO_DATA, IO_DATA).await {
             error!("Raw Write: No devices detected");
-            debug!("pool pins 0x{:02x}", self.bus.poll_pins());
+            debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
             self.bus.release_lines(IO_CLK | IO_ATN);
             // TO DO - async read handling
             return Err(DriverError::NoDevices);
