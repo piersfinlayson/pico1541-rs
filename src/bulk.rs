@@ -50,9 +50,11 @@ impl Bulk {
     /// * handling it (echoing it back or some other handling)
     pub async fn run(&mut self) -> ! {
         loop {
+            debug!("Waiting for OUT endpoint to be enabled");
             // Wait for the read (IN) endpoint to be enabled.  We can wait
             // forever, as we don't watchdog police this task.
             self.read_ep.wait_enabled().await;
+            debug!("OUT Endpoint enabled");
 
             // Device is now ready.
             update_status(DisplayType::Ready);
