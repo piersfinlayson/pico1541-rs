@@ -4,15 +4,15 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+use core::cell::RefCell;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver as RpUsbDriver, Endpoint, In, InterruptHandler, Out};
 use embassy_usb::descriptor::{SynchronizationType, UsageType};
 use embassy_usb::driver::{Driver, Endpoint as DriverEndpoint, EndpointType};
 use embassy_usb::{Builder, Config, UsbDevice};
-use static_cell::{ConstStaticCell, StaticCell};
+use static_cell::ConstStaticCell;
 
-use crate::bulk::{Bulk, BULK};
 use crate::constants::{
     MAX_EP_PACKET_SIZE, MAX_PACKET_SIZE_0, USB_CLASS, USB_POWER_MA, USB_PROTOCOL, USB_SUB_CLASS,
 };
@@ -26,19 +26,23 @@ bind_interrupts!(struct Irqs {
 });
 
 // The USB_DEVICE is primarily stored as a static to allow us to spawn a task
-// using the USB runner.  (This is the runner that schedules our Control
-// Handler.)  it is not used in other modules.
-//
-// Ownership is passed to the USB task, so nothing other than a StaticCell is
-// required.
-static USB_DEVICE: StaticCell<UsbDevice<'static, RpUsbDriver<'static, USB>>> = StaticCell::new();
+// using the USB runner.
+static USB_DEVICE: ConstStaticCell<RefCell<Option<UsbDevice<'static, RpUsbDriver<'static, USB>>>>> =
+    ConstStaticCell::new(RefCell::new(None));
+
+// Statics for the read and write endpoints.  These are used to store the
+// endpoints so we can take them when creating the Bulk and ProtocolHandler
+// objects.
+pub static READ_EP: ConstStaticCell<RefCell<Option<Endpoint<'static, USB, Out>>>> =
+    ConstStaticCell::new(RefCell::new(None));
+pub static WRITE_EP: ConstStaticCell<RefCell<Option<Endpoint<'static, USB, In>>>> =
+    ConstStaticCell::new(RefCell::new(None));
 
 // The following statics are used to store the USB descriptor buffers and
 // control buffer.  We store them as statics to avoid lifetime issues when
 // creating the USB builder.
 //
-// The ownership of these is passed to the USB builder, so we don't need
-
+// The ownership of these is passed to the USB builder.
 static CONFIG_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 static BOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 static MSOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
@@ -54,16 +58,11 @@ impl UsbStack {
     /// - `usb` - The USB peripheral
     /// - `iec_bus` - The IEC bus object
     ///
-    /// # Returns
-    /// (`USB, `Bulk`)
-    pub fn create_static(
-        p_usb: USB,
-        serial: &'static str,
-    ) -> (
-        &'static mut UsbDevice<'static, embassy_rp::usb::Driver<'static, USB>>,
-        &'static mut Bulk,
-        Endpoint<'static, USB, In>,
-    ) {
+    /// # Creates statics:
+    /// - `USB` - The USB device
+    /// - `READ_EP` - The read (Out) endpoint
+    /// - `WRITE_EP` - The write (In) endpoint
+    pub fn create_static(p_usb: USB, serial: &'static str) {
         // Create a new USB device
         let mut driver = RpUsbDriver::new(p_usb, Irqs);
 
@@ -144,16 +143,11 @@ impl UsbStack {
         // Build the UsbDevice and store it as a Static so we can spawn a task
         // with it.
         let usb = builder.build();
-        let usb = USB_DEVICE.init(usb);
+        USB_DEVICE.take().borrow_mut().replace(usb);
 
-        // Create a Bulk object, which will listen for data on the OUT endpoint
-        // and feed the watchdog.
-        let bulk = Bulk::new(ep_out);
-        let bulk = BULK.init(bulk);
-
-        // Now return the USB device,the Bulk object and the write endpoint
-        // (that last for ProtocolHandler).
-        (usb, bulk, ep_in)
+        // Store the endpoints
+        READ_EP.take().borrow_mut().replace(ep_out);
+        WRITE_EP.take().borrow_mut().replace(ep_in);
     }
 
     // Used to allocate specific endpoint numbers.  We do this to maintain
@@ -213,8 +207,8 @@ impl UsbStack {
 
 // Method to run the USB stack.
 #[embassy_executor::task]
-pub async fn usb_task(
-    usb: &'static mut UsbDevice<'static, embassy_rp::usb::Driver<'static, USB>>,
-) -> ! {
+pub async fn usb_task() -> ! {
+    // Run the USB Device runner.
+    let mut usb = USB_DEVICE.take().borrow_mut().take().expect("USB device not created");
     usb.run().await
 }

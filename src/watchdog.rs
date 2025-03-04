@@ -18,7 +18,12 @@ use rp2040_rom::ROM;
 use crate::constants::{WATCHDOG_LOOP_TIMER, WATCHDOG_TIMER};
 
 // We use the WATCHDOG static to store the Watchdog object, so we can feed it
-// from all of our tasks and objects.  This is shared and mutable.
+// from all of our tasks and objects.  This is shared and mutable.  We provide
+// helper function to allow tasks to register with, feed and use the watchdog:
+// - register_task()
+// - feed_watchdog()
+// - reboot_normal()
+// - reboot_dfu()
 pub static WATCHDOG: Mutex<CriticalSectionRawMutex, RefCell<Option<Watchdog>>> =
     Mutex::new(RefCell::new(None));
 

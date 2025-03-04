@@ -8,7 +8,7 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-// Allow dead code in here, as some constants are not used, depending on the
+// Allow dead code in here, as some constants may not be used depending on the
 // features enabled.
 #![allow(dead_code)]
 
@@ -44,7 +44,9 @@ pub const CORE1_WATCHDOG_TIMER: Duration = Duration::from_secs(10);
 pub const STATUS_DISPLAY_BLINK_TIMER: Duration = Duration::from_millis(100);
 
 // Timer for the StatusDisplay to pause between doing work.  Must be less
-// than the minimum time the status LED can be on off.
+// than the minimum time the status LED can be on off, and when the code
+// changes the device status, it will take up to this time for the new status
+// to be applied.
 pub const STATUS_DISPLAY_TIMER: Duration = Duration::from_millis(50);
 
 // How often we aim to log from our primary loops to prove they are still
@@ -116,7 +118,6 @@ pub const MAX_WRITE_SIZE_USIZE: usize = MAX_WRITE_SIZE as usize;
 
 /// Maximum size of a Read command
 pub const MAX_READ_SIZE: u16 = 32768;
-#[allow(dead_code)]
 pub const MAX_READ_SIZE_USIZE: usize = MAX_READ_SIZE as usize;
 
 /// Maximum size of xum1541 debug information strings
@@ -130,8 +131,10 @@ pub const INIT_CONTROL_RESPONSE_LEN: usize = 8;
 pub const ECHO_CONTROL_RESPONSE_LEN: usize = 8;
 
 /// The xum1541 firmware version the pico1541 is emulating.
-#[cfg(feature = "compatibility")]
+#[cfg(feature = "xum1541")]
 pub const XUM1541_FIRMWARE_VERSION: u8 = 8;
+#[cfg(any(feature = "pico1541", feature = "pico1541w"))]
+pub const PICO1541_FIRMWARE_VERSION: u8 = 1;
 
 //
 // Other constants

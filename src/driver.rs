@@ -1,5 +1,6 @@
 //! This file defines the ProtocolDriver trait, which is implemented by the
-//! various Commodore protocol implementations.
+//! various Commodore protocol implementations.  This is based on the xum1541
+//! source code.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //

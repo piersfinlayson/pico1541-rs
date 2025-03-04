@@ -12,26 +12,11 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, Out};
 use embassy_usb::driver::{Endpoint as DriverEndpoint, EndpointOut};
-use static_cell::StaticCell;
 
 use crate::constants::{MAX_EP_PACKET_SIZE, MAX_WRITE_SIZE_USIZE};
 use crate::display::{update_status, DisplayType};
 use crate::protocol::WRITE_DATA_CHANNEL;
-
-// The BULK static contains our Bulk data handling object, which  a
-// Protocol Handler object.
-//
-// The Bulk object consists of a runner that listens for data on the OUT
-// endpoint and then passes it to the ProtocolHandler to process.  It also
-// runs the ProtocolHandler's runner, which listens ProtocolActions which are
-// signaled by the Control object in response to Control requests from the
-// host.  Think Initialize, Reset, etc.  The ProtocolHandler's runner also
-// handles any data which needs to be sent to the host in response to Bulk
-// commands from the host.
-//
-// Ownership is passed to the USB task, so nothing other than a StaticCell is
-// required.
-pub static BULK: StaticCell<Bulk> = StaticCell::new();
+use crate::usb::READ_EP;
 
 /// The Bulk object contains the runner which handles bulk transfers on the
 /// OUT endpoint.
@@ -92,7 +77,7 @@ impl Bulk {
                             // and hence provide back-pressure.
                             WRITE_DATA_CHANNEL.send((size, data)).await;
                         } else {
-                            info!(
+                            warn!(
                                 "Received more data than we can handle {} bytes - dropping",
                                 size
                             );
@@ -102,7 +87,8 @@ impl Bulk {
                     }
                     Err(e) => {
                         // This occurs if the endpoint is disabled - so we go
-                        // around the outer loop again.
+                        // around the outer loop again waiting for it to be
+                        // re-enabled.
                         error!("Error reading from OUT endpoint: {:?}", e);
                         break;
                     }
@@ -111,7 +97,7 @@ impl Bulk {
                 // If we broke out of the read loop we need to update the
                 // device status
                 update_status(DisplayType::Init);
-                info!("OUT Endpoint disabled");
+                debug!("OUT Endpoint disabled");
             }
         }
     }
@@ -119,6 +105,15 @@ impl Bulk {
 
 /// Bulk task runner.
 #[embassy_executor::task]
-pub async fn bulk_task(bulk: &'static mut Bulk) -> ! {
+pub async fn bulk_task() -> ! {
+    // Get the core number, in order to log it.
+    let core = embassy_rp::pac::SIO.cpuid().read();
+    info!("Core{}: Bulk task started", core);
+
+    // Create the bulk object.
+    let read_ep = READ_EP.take().borrow_mut().take().expect("Read endpoint not created");
+    let mut bulk = Bulk::new(read_ep);
+
+    // Start Bulks' runner.
     bulk.run().await;
 }

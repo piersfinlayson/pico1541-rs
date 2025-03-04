@@ -25,7 +25,9 @@ use crate::constants::{
 };
 use crate::display::{update_status, DisplayType};
 use crate::driver::{DriverError, ProtocolDriver};
+use crate::gpio::GPIO;
 use crate::iec::{IecBus, IecDriver};
+use crate::usb::WRITE_EP;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
 // The PROTOCOL_ACTION static is a Signal that is used to communicate to the
@@ -541,6 +543,7 @@ impl ProtocolHandler {
     fn initialize(&mut self) {
         info!("Protocol Handler - initialized");
         self.state = ProtocolState::Initialized;
+        update_status(DisplayType::Ready);
         self.transfer = None
     }
 
@@ -548,6 +551,7 @@ impl ProtocolHandler {
     fn uninitialize(&mut self) {
         info!("Protocol Handler - uninitialized");
         self.state = ProtocolState::Uninitialized;
+        update_status(DisplayType::Init);
         self.transfer = None
     }
 
@@ -588,19 +592,24 @@ impl ProtocolHandler {
 }
 
 #[embassy_executor::task]
-pub async fn protocol_handler_task(iec_bus: IecBus, write_ep: Endpoint<'static, USB, In>) -> ! {
+pub async fn protocol_handler_task() -> ! {
     // Read the core ID.  Tasks are allocated to cores at compile time with
     // embassy, so we only need to do this once and store in ProtocolHandler.
     let core = embassy_rp::pac::SIO.cpuid().read();
+    info!("Core{}: Protocol Handler task started", core);
+
+    // Create the IEC bus object
+    let iec_bus = GPIO.lock().await.as_mut().expect("GPIO not created").create_iec_bus();
 
     // Create and spawn the ProtocolHandler task.
+    let write_ep = WRITE_EP.take().borrow_mut().take().expect("Write endpoint not created");
     let mut protocol_handler = ProtocolHandler::new(core, write_ep, iec_bus);
 
     // Register with the watchdog
     register_task(TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER);
 
+    // Start the protocol handling loop
     let mut next_log_instant = Instant::now();
-
     loop {
         let now = Instant::now();
         if now >= next_log_instant {

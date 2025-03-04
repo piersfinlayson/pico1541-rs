@@ -9,8 +9,8 @@ readme = "README.md"
 license = "GPLv3"
 keywords = ["OpenCBM", "xum1541", "Commodore", "disk", "embassy"]
 
-# Do not use features manually to build different versions of the firmware.
-# Instead, use cargo build --bin xum1541|pico1541|pico1541w
+# Do not use arbitrary sets of features manually to build different versions of the firmware.
+# Instead, use cargo build --bin xum1541|pico1541|pico1541w  --features xum1541|pico1541|pico1541w
 [features]
 xum1541 = [ "compatibility" ]
 pico1541 = [ "extended" ]
@@ -48,33 +48,47 @@ test = false
 required-features = ["pico1541w"]
 
 [dependencies]
-embassy-executor = { version = "0.7", features = ["task-arena-size-98304", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+# embassy-rs crates
+embassy-executor = { version = "0.7", features = ["task-arena-size-32768", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-rp = { version = "0.3", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040", "intrinsics"] }
 embassy-usb = { version = "0.4", features = ["defmt"] }
 embassy-futures = { version = "0.1" }
 embassy-sync = { version = "0.6", features = ["defmt"] }
 embassy-time = { version = "0.4", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-boot = { version = "0.4" }
+
+# Required for StaticCell and ConstStaticCell
 static_cell = { version = "2.1" }
 portable-atomic = { version = "1.10", features = ["critical-section"] }
+
+# Required for heapless::{String, Vec}
 heapless = { version = "0.8" }
 
+# WiFi support
 cyw43 = { version = "0.3", features = ["defmt", "firmware-logs"] }
 cyw43-pio = { version = "0.3", features = ["defmt"] }
 
+# defmt (for RTT logging)
 defmt = "0.3"
 defmt-rtt = "0.4"
 
+# Required for embassy on Raspberry Pi (Cortex M0)
 cortex-m = { version = "0.7.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
+
+# Required for Debug Probe panic support
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 
+# Required for embasse_time::Delay support
 embedded-hal = "1.0"
 
+# Allows us to handle bitflags gracefully
 bitflags = "2.8"
+
+# Exposes reset_usb_boot() RP2040 bootrom function (for reboot to DFU mode)
 rp2040-rom = "0.1.1"
 
 [build-dependencies]
+# Required for required build.rs support
 built = { version = "0.7", features = ["git2", "chrono"] }
 
 [profile.release]

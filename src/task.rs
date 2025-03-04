@@ -1,4 +1,4 @@
-//! Implements task handling support.
+//! Implements task handling support, including dual core support.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -8,13 +8,11 @@
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::{Executor, Spawner};
 use embassy_rp::multicore::{spawn_core1 as rp_spawn_core1, Stack};
-use embassy_rp::peripherals::{CORE1, USB};
-use embassy_rp::usb::{Endpoint, In};
-use static_cell::{StaticCell, ConstStaticCell};
-    
-use crate::bulk::Bulk;
+use embassy_rp::peripherals::CORE1;
+use static_cell::{ConstStaticCell, StaticCell};
+
+use crate::bulk::bulk_task;
 use crate::constants::CORE1_STACK_SIZE;
-use crate::iec::IecBus;
 use crate::protocol::protocol_handler_task;
 use crate::watchdog::reboot_normal;
 
@@ -52,56 +50,42 @@ use crate::watchdog::reboot_normal;
 // Statics
 //
 
-// A stack for core 1.  We will take it and use it mutably in core1_spawn. 
+// A stack for core 1.  We will take it and use it mutably in core1_spawn.
 static CORE1_STACK: ConstStaticCell<Stack<CORE1_STACK_SIZE>> = ConstStaticCell::new(Stack::new());
 
 // An executor for core 1.
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 
-// We're going to spawn a task on core 1.  We need to pass it a stack, which we
-// have declared as a static.  We haven't bothered to mutex protect it, so we
-// need to use an unsafe block to access it.
+// We're going to spawn a task on core 1.  This requires an executor, which
+// needs to live for infinity, hence we have declared it as a static above.
+// We need to pass it a stack, which we have also declared as a static.
 #[allow(static_mut_refs)]
-pub fn core1_spawn(
-    p_core1: CORE1,
-    bulk: &'static mut Bulk,
-    iec_bus: IecBus,
-    write_ep: Endpoint<'static, USB, In>,
-) {
-    let core1_stack = CORE1_STACK.take();
-    rp_spawn_core1(p_core1, core1_stack, move || {
+pub fn core1_spawn(p_core1: CORE1) {
+    rp_spawn_core1(p_core1, CORE1_STACK.take(), move || {
         let executor1 = EXECUTOR1.init(Executor::new());
-        executor1.run(|spawner| core1_main(&spawner, bulk, iec_bus, write_ep))
+        executor1.run(|spawner| {
+            spawn_or_reboot(spawner.spawn(core1_main()), "Core 1");
+        })
     });
 }
 
-// Core 1's "main" function.  This gets run get the executor on core 1, and
-// spawns core 1's tasks.
-pub fn core1_main(
-    spawner: &Spawner,
-    bulk: &'static mut Bulk,
-    iec_bus: IecBus,
-    write_ep: Endpoint<'static, USB, In>,
-) {
+// Initial function for core 1.  This gets run using the executor on core 1,
+// and spawns core 1's tasks.
+#[embassy_executor::task]
+pub async fn core1_main() {
+    // Get the core number, in order to log it.
     let core: u32 = embassy_rp::pac::SIO.cpuid().read();
     info!("Core{}: Core 1 main started", core);
 
-    // Spawn the Protocol Handler task.
-    spawn_or_reboot(
-        spawner.spawn(protocol_handler_task(iec_bus, write_ep)),
-        "Protocol Handler",
-    );
+    // Get the spawner
+    let spawner = Spawner::for_current_executor().await;
 
-    // Spawn core'1 current task.
-    spawner.spawn(core1_task(bulk)).unwrap();
-}
+    // Spawn the Protocol Handler task.  Do this first, so the Bulk runner
+    // task can access the protocol handler.
+    spawn_or_reboot(spawner.spawn(protocol_handler_task()), "Protocol Handler");
 
-#[embassy_executor::task]
-async fn core1_task(bulk: &'static mut Bulk) -> ! {
-    let core: u32 = embassy_rp::pac::SIO.cpuid().read();
-    info!("Core{}: Bulk task started", core);
-
-    bulk.run().await;
+    // Spawn the Bulk runner task.
+    spawn_or_reboot(spawner.spawn(bulk_task()), "Bulk");
 }
 
 /// Method to spawn tasks.  Can be called on either core.
@@ -121,7 +105,7 @@ pub fn spawn_or_reboot<T, E: defmt::Format>(spawn_result: Result<T, E>, task_nam
     match spawn_result {
         Ok(_) => {
             let core: u32 = embassy_rp::pac::SIO.cpuid().read();
-            info!("Core{}: Spawned task {}", core, task_name);
+            debug!("Core{}: Spawned task {}", core, task_name);
         }
         Err(e) => {
             error!("Failed to spawn task: {}, error: {}", task_name, e);

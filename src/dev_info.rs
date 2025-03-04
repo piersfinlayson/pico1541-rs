@@ -1,4 +1,5 @@
-//! Used to define the USB device information based on the features enabled.
+//! Used to define the USB device information, contained in the USB device
+//! and configuration descriptors, based on the feature(s) enabled.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -52,40 +53,11 @@ pub const IN_EP: u8 = constants::PICO1541_IN_EP;
 
 /// Gets the device serial number as a string slice
 ///
-/// This function retrieves the device's serial number in two different ways depending on compile features:
+/// This function retrieves the device's serial number in two different ways
+/// depending on compile features:
 /// - With "compatibility" feature: Returns a constant predefined serial number
-/// - With "extended" feature: Reads the unique Pico ID from flash memory and formats it as a hex string
-///
-/// # Arguments
-/// * `p` - Mutable reference to device peripherals
-/// * `byte_buf` - Buffer to store the raw 8-byte unique ID (for "extended" feature)
-/// * `str_buf` - String buffer to store the formatted hex output
-///
-/// # Returns
-/// A string slice reference to the formatted serial number
-///
-/// # Example
-/// ```
-/// let mut byte_buf = [0u8; 8];
-/// let mut str_buf = heapless::String::<16>::new();
-/// let serial = get_serial(&mut peripherals, &mut byte_buf, &mut str_buf);
-/// ```
-/// Gets the device serial number as a string slice
-///
-/// This function retrieves the device's serial number in two different ways depending on compile features:
-/// - With "compatibility" feature: Returns a constant predefined serial number
-/// - With "extended" feature: Reads the unique Pico ID from flash memory and formats it as a hex string
-///
-/// # Arguments
-/// * `p` - Mutable reference to device peripherals (unused in compatibility mode)
-/// * `str_buf` - String buffer to store the formatted hex output (unused in compatibility mode)
-///
-/// # Example
-/// ```
-/// let mut byte_buf = [0u8; 8];
-/// let mut str_buf = heapless::String::<16>::new();
-/// let serial = get_serial(&mut peripherals, &mut byte_buf, &mut str_buf);
-/// ```
+/// - With "extended" feature: Reads the unique Pico ID from flash memory and
+///   formats it as a hex string
 #[cfg(feature = "compatibility")]
 pub fn get_serial(
     _flash: &mut FLASH,
@@ -111,7 +83,7 @@ pub fn get_serial(
         }
     }
 
-    // Store the serial number in the statics
+    // Store the serial number in the statics and return references to them.
     (USB_SERIAL.init(serial.clone()), LOG_SERIAL.init(serial))
 }
 #[cfg(feature = "extended")]
@@ -146,7 +118,7 @@ pub fn get_serial(
 
     // Format the bytes as hex string
     for b in bytes_to_format.iter() {
-        // Using defmt's formatting or manual hex formatting
+        // Using defmt's formatting or manual hex formatting if possible.
         use core::fmt::Write;
         match write!(serial, "{:02x}", b) {
             Ok(_) => {}
@@ -159,6 +131,6 @@ pub fn get_serial(
         }
     }
 
-    // Store the serial number in the statics
+    // Store the serial number in the statics and return references to them.
     (USB_SERIAL.init(serial.clone()), LOG_SERIAL.init(serial))
 }

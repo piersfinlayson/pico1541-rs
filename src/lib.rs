@@ -69,16 +69,19 @@ use watchdog::{watchdog_task, Watchdog};
 // - If your static will be mutable, but you will be passing ownership of it
 //   to another object, then no Mutex is required either.
 //
-// - If you need mutable access, you need to use a Mutex _and_ a RefCell.
+// - If you need mutable access, you need to use a Mutex.  If you are using a
+//   embassy_sync::mutex::Mutex (which is async) you do not need a RefCell for
+//   interior mutability.  If you use a blocking_mutexx::Mutex you do.
 //   - Generally use CriticalSectionRawMutex, as these work on multi-core
 //     systems.
 //   - ThreadModeRawMutex is, as it sounds, so single threaded usage.
 //   - NoopRawMutex is for when you don't need a mutex.
 //
 //   Our implementation is not sufficiently dependent on performance to
-//   require optimization here, so we always use CriticalSectionRawMutex.
+//   require optimization here, so we tend to use CriticalSectionRawMutex.
 //
-// The statics are stored in the module that creates them.
+// The statics tend to be stored in the module that creates them.  So, for
+// example, the GPIO static is in gpio.
 
 // Our main function.  This is the entry point for our application and like
 // most embedded implementations, we do not want it to exit as that would mean
@@ -135,27 +138,28 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // Log the information about this firmware build.
     built::log_fw_info(bin_name, log_serial);
 
-    // Create the objects that need GPIOs.  We do this all at once so there is
-    // a single place in the code that allocates GPIOs - to make it easier to
-    // see what is being used.
-    //
-    // While not visible here, the first object which is created is the
-    // StatusDisplay object, and it turns on the status LED (indicating the
-    // device is in the initialisation phase).
-    let (iec_bus,) = Gpio::create_pin_objects(
+    // Create the Gpio object, which manages the pins
+    Gpio::create_static(
         pin_0, pin_1, pin_2, pin_3, pin_4, pin_5, pin_6, pin_7, pin_8, pin_9, pin_10, pin_11,
         pin_12, pin_13, pin_14, pin_15, pin_16, pin_17, pin_18, pin_19, pin_20, pin_21, pin_22,
-        pin_23, pin_24, pin_25, pin_26, pin_27, pin_28, pin_29,
-    );
-
-    // Create the USB stack and the Bulk object.  We do this at the same time
-    // because Bulk needs the endpoints from the USB Stack creation.
-    let (usb, bulk, write_ep) = UsbStack::create_static(p_usb, usb_serial);
+        pin_23, pin_24, pin_25, pin_26, pin_27, pin_28, pin_29, None,
+    )
+    .await;
 
     // Set up the watchdog - stores it in the WATCHDOG static.  We do this
     // before we create any tasks (as they might try and access the static
     // once that's happened, in order to feed it).
     Watchdog::create_static(p_watchdog);
+
+    // Spawn the status display task.  We do this before the other tasks, as
+    // once they are created they may try to update the status display.
+    // However, it must be done after the GPIO static is created, as it needs
+    // to retrieve the appropriate pin.
+    spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
+
+    // Create the USB stack and the Bulk object.  We do this at the same time
+    // because Bulk needs the endpoints from the USB Stack creation.
+    UsbStack::create_static(p_usb, usb_serial);
 
     // Spawn the Status Display and USB tasks on core 0.
     //
@@ -166,17 +170,14 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     //
     // See [`task.rs`] for an explanation of the multi-core strategy.
     spawn_or_reboot(spawner.spawn(watchdog_task()), "Watchdog");
-    spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
-    spawn_or_reboot(spawner.spawn(usb_task(usb)), "USB");
+
+    spawn_or_reboot(spawner.spawn(usb_task()), "USB");
 
     // Spawn the core1 task to start the Bulk task and the core Commodore
     // protocol handling.
-    core1_spawn(p_core1, bulk, iec_bus, write_ep);
+    core1_spawn(p_core1);
 
-    // Finally, spawn the watchdog task.  This starts the hardware watchdog,
-    // and our watchdog starts checking it's being fed by any registered
-    // tasks.
-
+    // Now just loop forever, logging every so often.
     let core = embassy_rp::pac::SIO.cpuid().read();
     let mut ticker = Ticker::every(LOOP_LOG_INTERVAL);
     loop {

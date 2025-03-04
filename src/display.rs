@@ -4,24 +4,22 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use core::cell::RefCell;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::gpio::{Level, Output, Pin};
-use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
+use embassy_rp::gpio::{AnyPin, Level, Output};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 
 use crate::constants::{
     STATUS_DISPLAY_BLINK_TIMER, STATUS_DISPLAY_TIMER, STATUS_DISPLAY_WATCHDOG_TIMER,
 };
+use crate::gpio::GPIO;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
-// The STATUS_DISPLAY static is used to store the StatusDisplay object, which
-// is used to display the status of the device on the LED.  It is shared
-// between different objects, so we need a Mutex and a RefCell (the latter for
-// mutability).
-pub static STATUS_DISPLAY: Mutex<CriticalSectionRawMutex, RefCell<Option<StatusDisplay>>> =
-    Mutex::new(RefCell::new(None));
+// The STATUS_DISPLAY static is used to signal to the StatusDisplay object
+// that it needs to update the LED state.
+pub static STATUS_DISPLAY: Signal<CriticalSectionRawMutex, DisplayType> = Signal::new();
 
 /// Status display types
 /// Corresponds to the different operating states of the device
@@ -55,31 +53,25 @@ pub struct StatusDisplay {
 }
 
 impl StatusDisplay {
-    /// Creates a new StatusDisplay with the specified LED pin and stores it
-    /// in the STATUS_DISPLAY static.
+    /// Creates a new StatusDisplay with the specified LED pin..
     ///
     /// The LED is initially turned on (Init state)
-    pub fn create_static(led_pin: impl Pin) {
+    pub fn new(led_pin: AnyPin) -> Self {
         // Create the display with the LED on
-        let status_display = Self {
+        Self {
             led: Output::new(led_pin, Level::High),
             current_status: DisplayType::Init,
             last_toggle: Instant::now(),
             led_state: true,
-        };
-
-        // Store the status_display as a static so we can access it from our
-        // tasks.
-        STATUS_DISPLAY.lock(|d| {
-            *d.borrow_mut() = Some(status_display);
-        });
+        }
     }
 
     /// Update the current status
     ///
     /// This is calld by other tasks to change what the LED displays.
     pub fn update(&mut self, status: DisplayType) {
-        // Only update LED immediately if changing to/from states with different LED behaviors
+        // Only update LED immediately if changing to/from states with
+        // different LED behaviors
         if self.current_status != status {
             self.current_status = status;
 
@@ -93,7 +85,8 @@ impl StatusDisplay {
                     self.led.set_low(); // Turn LED off
                     self.led_state = false;
                 }
-                // For Active and Error states, we'll handle the toggling in do_work()
+                // For Active and Error states, we'll handle the toggling
+                // in do_work()
                 _ => {}
             }
         }
@@ -103,8 +96,8 @@ impl StatusDisplay {
     /// This function does not block - but performs an action if it's
     /// outstanding, queues up the next action (for example sets a time by
     /// which the next action should be performed).
-    /// Returns the maximum Duration until the next time this function
-    /// should be called.
+    /// Returns the maximum Duration until the next time this function should
+    /// be called.
     pub fn do_work(&mut self) -> Duration {
         // Handle LED updates based on current status
         match self.current_status {
@@ -176,6 +169,14 @@ impl StatusDisplay {
 /// This is an embassy executor task that periodically calls do_work()
 #[embassy_executor::task]
 pub async fn status_task() -> ! {
+    // Get the core number, in order to log it.
+    let core = embassy_rp::pac::SIO.cpuid().read();
+    info!("Core{}: Status display task started", core);
+
+    // Create the status display object
+    let led_pin = GPIO.lock().await.as_mut().expect("GPIO not created").get_status_display_pin();
+    let mut display = StatusDisplay::new(led_pin);
+
     // Register with the watchdog
     register_task(TaskId::Display, STATUS_DISPLAY_WATCHDOG_TIMER);
 
@@ -183,33 +184,31 @@ pub async fn status_task() -> ! {
         // Feed the watchdog
         feed_watchdog(TaskId::Display);
 
-        // Let the status display do some work and get the time until next update
-        let next_update = STATUS_DISPLAY.lock(|d| {
-            d.borrow_mut()
-                .as_mut()
-                .expect("StatusDisplay object doesn't exist")
-                .do_work()
-        });
+        // Update the status if necessary
+        if let Some(new_status) = STATUS_DISPLAY.try_take() {
+            display.update(new_status)
+        }
+
+        // Let the status display do some work and get the time until next
+        // update.
+        let next_update = display.do_work();
 
         // Determine how long to wait - use the minimum of:
         // 1. The time until the next LED update is needed (from do_work)
         // 2. The maximum time we want to wait before checking for status
-        // changes (STATUS_DISPLAY_TIMER)
+        //    changes (STATUS_DISPLAY_TIMER)
         let wait_time = Duration::min(next_update, STATUS_DISPLAY_TIMER);
 
-        // Now pause for the calculated time. This allows other tasks
-        // to grab the StatusDisplay object and do their work, while also
-        // ensuring we wake up in time for the next required LED update.
+        // Now pause for the calculated time. This allows other tasks to grab
+        // the StatusDisplay object and do their work, while also ensuring we
+        // wake up in time for the next required LED update.
         Timer::after(wait_time).await;
     }
 }
 
-/// Helper function to update the status
+/// Helper function to update the status, which handles locking the mutex.
 pub fn update_status(display: DisplayType) {
-    STATUS_DISPLAY.lock(|d| {
-        d.borrow_mut()
-            .as_mut()
-            .expect("StatusDisplay object doesn't exist")
-            .update(display)
-    });
+    // It's OK to overwrite the last status, if it hasn't been applied yet, as
+    // this new status should supercede the old one.
+    STATUS_DISPLAY.signal(display);
 }

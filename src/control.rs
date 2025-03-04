@@ -1,4 +1,13 @@
 //! This module implements the USB Control handler.
+//!
+//! This includes
+//! * USB lifecycle events (enabled, disabled, reset, addressed, configured,
+//!   deconfigured, suspended and resumed)
+//! * Control requests (IN and OUT) from the host
+//!
+//! IN Control requests are those where the host is expecting data from th
+//! device.  OUT Control requests are those where the host may send data to
+//! the device.  In all cases, the requests is initiated by the host.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -36,8 +45,7 @@ pub struct Control {
     if_num: InterfaceNumber,
 }
 
-// Error type used internally to device how to respond to a Control message.
-
+// Error type used internally to decide how to respond to a Control message.
 enum ControlError {
     // Ignore means we return None from the control handler function.
     Ignore,
@@ -55,9 +63,9 @@ impl Handler for Control {
             }
             false => {
                 info!("USB device disabled");
-                update_status(DisplayType::Init);
             }
         }
+        update_status(DisplayType::Init);
         self.set_action(ProtocolAction::Uninitialize);
     }
 
@@ -78,6 +86,7 @@ impl Handler for Control {
             true => info!("USB device configuration enabled"),
             false => info!("USB device configuration disabled"),
         }
+        update_status(DisplayType::Init);
         self.set_action(ProtocolAction::Uninitialize);
     }
 
@@ -95,61 +104,64 @@ impl Handler for Control {
 
         // It could be argued that we shoud store off the current state and
         // reapply it after resume.  But we're not going to do that.
+        update_status(DisplayType::Init);
         self.set_action(ProtocolAction::Uninitialize);
     }
 
-    /// Respond to HostToDevice control messages, where the host sends us a command and
-    /// optionally some data, and we can only acknowledge or reject it.
-    fn control_out<'a>(&'a mut self, req: Request, buf: &'a [u8]) -> Option<OutResponse> {
-        // Log the request before filtering to help with debugging.
-        info!("Got control_out, request={}, buf={:a}", req, buf);
-
+    /// Respond to OUT control messages, where the host sends us a command.
+    /// In our implementation, none of the OUT control messages include the
+    /// host sending data, so buf is unused.
+    fn control_out<'a>(&'a mut self, req: Request, _buf: &'a [u8]) -> Option<OutResponse> {
         // Get the request type, and check for errors
         let result = self.check_request(req, Direction::Out);
+
+        // Handle the request
         if result.is_err() {
             update_status(DisplayType::Error);
         }
-        let request = match result {
-            Err(ControlError::Ignore) => return None,
-            Err(ControlError::Invalid) => return Some(OutResponse::Rejected),
-            Ok(r) => r,
-        };
-
-        // Handle the request
-        match self.handle_out(&request) {
+        match result {
             Err(ControlError::Ignore) => None,
             Err(ControlError::Invalid) => Some(OutResponse::Rejected),
-            Ok(_) => Some(OutResponse::Accepted),
+            Ok(request) => {
+                // Handle the request
+                match self.handle_out(&request) {
+                    Err(ControlError::Ignore) => None,
+                    Err(ControlError::Invalid) => Some(OutResponse::Rejected),
+                    Ok(_) => Some(OutResponse::Accepted),
+                }
+            }
         }
     }
 
-    /// Respond to DeviceToHost control messages, where the host requests some data from us.
+    /// Respond to IN control messages, where the host requests some data from
+    /// the device.
     fn control_in<'a>(&'a mut self, req: Request, buf: &'a mut [u8]) -> Option<InResponse<'a>> {
-        info!("Got control_in, request={}", req);
-
         // Get the request type, and check for errors
         let result = self.check_request(req, Direction::In);
+
+        // Handle the request
         if result.is_err() {
             update_status(DisplayType::Error);
         }
-        let request = match result {
-            Err(ControlError::Ignore) => return None,
-            Err(ControlError::Invalid) => return Some(InResponse::Rejected),
-            Ok(r) => r,
-        };
-
-        // Handle the request and build the response
-        match self.handle_in(&request, buf, req.length as usize) {
+        match result {
             Err(ControlError::Ignore) => None,
-            Err(ControlError::Invalid) | Ok(0) => Some(InResponse::Rejected),
-            Ok(len) => Some(InResponse::Accepted(&buf[..len])),
+            Err(ControlError::Invalid) => Some(InResponse::Rejected),
+            Ok(request) => {
+                // Handle the request and build the response
+                match self.handle_in(&request, buf, req.length as usize) {
+                    Err(ControlError::Ignore) => None,
+                    Err(ControlError::Invalid) | Ok(0) => Some(InResponse::Rejected),
+                    Ok(len) => Some(InResponse::Accepted(&buf[..len])),
+                }
+            }
         }
     }
 }
 
 // Our own Control functions to help deal with the USB control requests.
 impl Control {
-    // Create a new instance of this control handler.
+    // Create a new instance of this control handler.  Stores the created
+    // instance in the static.  Will panic if this is called more than once.
     pub fn create_static(if_num: InterfaceNumber) -> &'static mut Self {
         let control = Self { if_num };
         CONTROL.init(control)
@@ -157,10 +169,14 @@ impl Control {
 
     // Check the request is valid and supported.
     fn check_request(&self, req: Request, dir: Direction) -> Result<ControlRequest, ControlError> {
+        // Trace the request.
+        trace!("Control request to interface: 0x{:02x}, request type: 0x{:02x}, recipient: {:?}, direction: {}",
+            req.index, req.request_type, req.recipient, dir);
+
         // Only handle Class request types to an Interface.
         if req.request_type != RequestType::Class || req.recipient != Recipient::Interface {
             info!(
-                "Ignoring request type: {:?}, recipient: {:?}",
+                "Ignoring Control request type: 0x{:02x}, recipient: {:?}",
                 req.request_type, req.recipient
             );
             return Err(ControlError::Ignore);
@@ -168,20 +184,20 @@ impl Control {
 
         // Ignore requests to other interfaces.
         if req.index != self.if_num.0 as u16 {
-            info!("Ignoring request to interface: {}", req.index);
+            info!("Ignoring Control request to interface: 0x{:02x}", req.index);
             return Err(ControlError::Ignore);
         }
 
-        // Check we got a supported request
+        // Check we got a supported request - reject if not.
         let request = match ControlRequest::try_from(req.request) {
             Ok(r) => r,
             Err(_) => {
-                info!("Invalid control request: {}", req.request);
+                info!("Invalid Control request type: 0x{:02x}", req.request);
                 return Err(ControlError::Invalid);
             }
         };
 
-        // Check we got an In request
+        // Check we got a request in the correct direction - reject if not.
         if request.direction() != dir {
             info!(
                 "Ignoring request {} with direction {}",
@@ -197,17 +213,8 @@ impl Control {
     // Handler for OUT rquests.
     fn handle_out(&mut self, request: &ControlRequest) -> Result<(), ControlError> {
         match request {
-            ControlRequest::Reset => {
-                // We only want to set the action to RESET if there's no action
-                // outstanding.  If there's a reset outstanding, it's a no-op.
-                // If we have initialize or uninitialize, they superceed.
-                self.set_action(ProtocolAction::Reset);
-            }
-            ControlRequest::Shutdown => {
-                // Overwrite any existing action as this takes precedence
-                self.set_action(ProtocolAction::Uninitialize);
-                update_status(DisplayType::Ready);
-            }
+            ControlRequest::Reset => self.set_action(ProtocolAction::Reset),
+            ControlRequest::Shutdown => self.set_action(ProtocolAction::Uninitialize),
             ControlRequest::EnterBootloader => {
                 info!("Entering DFU bootloader");
                 reboot_dfu(); // Does not return
@@ -221,15 +228,20 @@ impl Control {
         Ok(())
     }
 
+    // Handler for IN requests.
     fn handle_in(
         &self,
         request: &ControlRequest,
         buf: &mut [u8],
         len: usize,
     ) -> Result<usize, ControlError> {
-        // Check the response length is correct for this request
+        // Check the expected length is correct for this request.
         let response_len = request.response_len();
         if len < response_len {
+            info!(
+                "Invalid response length for request: 0x{:02x}, {} vs {}",
+                request, len, response_len
+            );
             return Err(ControlError::Invalid);
         }
 
@@ -240,53 +252,48 @@ impl Control {
         match request {
             ControlRequest::Echo => buf[0] = &ControlRequest::Echo as *const _ as u8,
             ControlRequest::Init => {
-                // Overwrite any existing action as initialize will also
-                // deinitialize first (and also reset if required)
                 self.set_action(ProtocolAction::Initialize);
-                update_status(DisplayType::Active);
 
                 // Build the response
-                buf[0] = 0x08;
+                #[cfg(feature = "xum1541")]
+                {
+                    buf[0] = crate::constants::XUM1541_FIRMWARE_VERSION;
+                }
+                #[cfg(not(feature = "xum1541"))]
+                {
+                    buf[0] = crate::constants::PICO1541_FIRMWARE_VERSION;
+                }
                 buf[1] = 0x03;
             }
             ControlRequest::GitRev => {
-                if let Some(version) = GIT_VERSION {
-                    // Copy the version string to the buffer with null
-                    // termination
-                    let bytes = version.as_bytes();
-                    let len = core::cmp::min(bytes.len(), len);
-                    buf[..len].copy_from_slice(&bytes[..len]);
-                    buf[len] = 0;
-                } else {
-                    buf[..8].copy_from_slice(b"unknown\0");
-                }
+                let version = GIT_VERSION.unwrap_or("unknown");
+                Self::copy_string_to_buffer(version, buf);
             }
             ControlRequest::RustcVer => {
                 // Extract the version number (e.g. 1.83.0) from the full rustc
                 // version string
                 let version = RUSTC_VERSION.split_whitespace().nth(1).unwrap_or("unknown");
-
-                // Copy the version string to the buffer with null termination
-                let copy_len = core::cmp::min(len - 1, version.len());
-                buf[..copy_len].copy_from_slice(&version.as_bytes()[..copy_len]);
-                buf[copy_len] = 0;
+                Self::copy_string_to_buffer(version, buf);
             }
             ControlRequest::PkgVer => {
                 // There is no libc version or SDK version within this
                 // rust implementation, so we interpret this as our Cargo.toml
                 // version (i.e. the version of this crate).
                 let version = PKG_VERSION;
-                let copy_len = core::cmp::min(len, version.len());
-                buf[..copy_len].copy_from_slice(&version.as_bytes()[..copy_len]);
-                if copy_len < len {
-                    // null terminate
-                    buf[copy_len] = 0;
-                }
+                Self::copy_string_to_buffer(version, buf);
             }
             _ => unreachable!(),
         };
 
         Ok(response_len)
+    }
+
+    // Copies a string to a buffer, ensuring it is null-terminated.  Used for
+    // returning device information on control requests.
+    fn copy_string_to_buffer(source: &str, buf: &mut [u8]) {
+        let copy_len = core::cmp::min(buf.len().saturating_sub(1), source.len());
+        buf[..copy_len].copy_from_slice(&source.as_bytes()[..copy_len]);
+        buf[copy_len] = 0;
     }
 
     // Sets the shared PROTOCOL_ACTION to the given action to signal to the
@@ -305,8 +312,8 @@ impl Control {
                     // action
                     ProtocolAction::Uninitialize => ProtocolAction::Uninitialize,
 
-                    // Only set the action to reset if there's no action
-                    // outstanding (which there is if we get here)
+                    // Only set the action to reset if there's no other action
+                    // outstanding.
                     ProtocolAction::Reset => existing,
                 };
                 action
@@ -315,12 +322,12 @@ impl Control {
         };
 
         // signal() always succeeds as it overwrites any other value - but
-        // there shouldn't be one because we just took it.
+        // in any case there shouldn't be one because we just took it above.
         PROTOCOL_ACTION.signal(action);
     }
 }
 
-// List of Control requests that we accept.
+// List of Control requests that the device accepts.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlRequest {
@@ -352,7 +359,7 @@ impl ControlRequest {
         }
     }
 
-    // Returns the response length of the request, for OUT requests.
+    // Returns the response (data) length of the request, for OUT requests.
     fn response_len(&self) -> usize {
         match self {
             ControlRequest::Echo => ECHO_CONTROL_RESPONSE_LEN,
@@ -368,7 +375,7 @@ impl ControlRequest {
 // Implements try_from to create a ControlRequest from the USB control request
 // byte
 impl TryFrom<u8> for ControlRequest {
-    type Error = ();
+    type Error = ControlError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
@@ -381,12 +388,13 @@ impl TryFrom<u8> for ControlRequest {
             0x06 => Ok(Self::GitRev),
             0x07 => Ok(Self::RustcVer),
             0x08 => Ok(Self::PkgVer),
-            _ => Err(()),
+            _ => Err(ControlError::Invalid),
         }
     }
 }
 
-// Implements Format to allow defmt to print the ControlRequest.
+// Implements Format to allow defmt to print the Control request type in human
+// readable form.
 impl defmt::Format for ControlRequest {
     fn format(&self, f: defmt::Formatter) {
         match self {

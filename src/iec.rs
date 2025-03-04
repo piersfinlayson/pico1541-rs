@@ -20,6 +20,9 @@ use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::ProtocolFlags;
 use crate::watchdog::{feed_watchdog, TaskId};
 
+//
+// IEC protocol timers
+//
 const IEC_T_AT: u32 = 1000; // Max ATN response required time (us)
                             //      IEC_T_H     inf  // Max listener hold-off time
 const IEC_T_NE: u32 = 40; // Typical non-EOI response to RFD time (us)
@@ -38,7 +41,7 @@ const IEC_T_DA: u32 = 80; // Min talk-attention ack hold time (us)
 const IEC_T_FR: u32 = 60; // Min EOI acknowledge time (us)
 
 // An object representing the physical IEC bus.  Each Line is a pair of
-// pins, one input and one output.
+// pins, one input and one output.  Pin assignments are in `gpio.rs`.
 pub struct IecBus {
     data: Line,
     clock: Line,
