@@ -8,10 +8,6 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-// Allow dead code in here, as some constants may not be used depending on the
-// features enabled.
-#![allow(dead_code)]
-
 use embassy_time::Duration;
 
 //
@@ -33,9 +29,6 @@ pub const PROTOCOL_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 /// How often the status display must feed the watchdog to prevent a reset.
 pub const STATUS_DISPLAY_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 
-/// How often core 1 must feed the watchdog to prevent a reset.
-pub const CORE1_WATCHDOG_TIMER: Duration = Duration::from_secs(10);
-
 //
 // Task main runner and related timers.
 //
@@ -53,11 +46,8 @@ pub const STATUS_DISPLAY_TIMER: Duration = Duration::from_millis(50);
 // alive.
 pub const LOOP_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How long the bulk runner will wait for a data from the host before feeding
-/// the watchdog and letting ProtocolHanlder perform_action().  Doesn't need
-/// to be long as we just need to give read a chance to read data if some
-/// outstanding.
-pub const BULK_READ_TIMEOUT: Duration = Duration::from_millis(10);
+/// How often the protocol handler task pauses so other tasks can run.
+pub const PROTOCOL_LOOP_TIMER: Duration = Duration::from_millis(1);
 
 //
 // USB device configuration constants.
@@ -78,28 +68,39 @@ pub const MAX_EP_PACKET_SIZE_USIZE: usize = MAX_EP_PACKET_SIZE as usize;
 /// larger than 0x0F, as the Pi only supports up to 16 endpoints in its
 /// hardware registers.  If it is, the firmware will panic during the
 /// endpoint allocation, as the endpoint cannot be allocated.
+#[cfg(feature = "compatibility")]
 pub const XUM1541_OUT_EP: u8 = 0x04;
+#[cfg(feature = "extended")]
 pub const PICO1541_OUT_EP: u8 = 0x01;
 
 /// IN (Device to Host) endpoint number/  As above, this cannot be larger
 /// that 0x0F.
+#[cfg(feature = "compatibility")]
 pub const XUM1541_IN_EP: u8 = 0x83;
+#[cfg(feature = "extended")]
 pub const PICO1541_IN_EP: u8 = 0x81;
 
 /// USB Descriptor information - Vendor ID and Product ID
+#[cfg(feature = "compatibility")]
 pub const XUM1541_VENDOR_ID: u16 = 0x16d0;
+#[cfg(feature = "compatibility")]
 pub const XUM1541_PRODUCT_ID: u16 = 0x0504;
+#[cfg(feature = "extended")]
 pub const PICO1541_VENDOR_ID: u16 = 0x1209;
+#[cfg(feature = "extended")]
 pub const PICO1541_PRODUCT_ID: u16 = 0xf541;
 
 /// USB Descriptor information - manufacturer string
 pub const MANUFACTURER: &str = "piers.rocks";
 
 /// USB Descriptor info - product string
+#[cfg(feature = "compatibility")]
 pub const XUM1541_PRODUCT: &str = "xum1541 floppy adapter (pico1541)";
+#[cfg(feature = "extended")]
 pub const PICO1541_PRODUCT: &str = "pico1541 floppy adapter";
 
 /// USB Descriptor info - serial number string
+#[cfg(feature = "compatibility")]
 pub const XUM1541_SERIAL: &str = "000";
 pub const MAX_SERIAL_STRING_LEN: usize = 16;
 
@@ -118,7 +119,6 @@ pub const MAX_WRITE_SIZE_USIZE: usize = MAX_WRITE_SIZE as usize;
 
 /// Maximum size of a Read command
 pub const MAX_READ_SIZE: u16 = 32768;
-pub const MAX_READ_SIZE_USIZE: usize = MAX_READ_SIZE as usize;
 
 /// Maximum size of xum1541 debug information strings
 pub const MAX_XUM_DEVINFO_SIZE: u16 = 8;
@@ -131,9 +131,9 @@ pub const INIT_CONTROL_RESPONSE_LEN: usize = 8;
 pub const ECHO_CONTROL_RESPONSE_LEN: usize = 8;
 
 /// The xum1541 firmware version the pico1541 is emulating.
-#[cfg(feature = "xum1541")]
+#[cfg(feature = "compatibility")]
 pub const XUM1541_FIRMWARE_VERSION: u8 = 8;
-#[cfg(any(feature = "pico1541", feature = "pico1541w"))]
+#[cfg(feature = "extended")]
 pub const PICO1541_FIRMWARE_VERSION: u8 = 1;
 
 //
