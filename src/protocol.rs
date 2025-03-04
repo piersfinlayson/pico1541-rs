@@ -16,12 +16,12 @@ use embassy_rp::usb::{Endpoint, In};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
-use embassy_time::Instant;
+use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointIn;
 use heapless::Vec;
 
 use crate::constants::{
-    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_GPIO_PINS, MAX_READ_SIZE, MAX_WRITE_SIZE,
+    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_GPIO_PINS, MAX_READ_SIZE, MAX_WRITE_SIZE, PROTOCOL_LOOP_TIMER, 
     MAX_WRITE_SIZE_USIZE, PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE,
 };
 use crate::display::{update_status, DisplayType};
@@ -773,6 +773,9 @@ pub async fn protocol_handler_task() -> ! {
 
         // Handle any data read in by the USB driver.
         protocol_handler.handle_data().await;
+
+        // Pause to allow other tasks to run
+        Timer::after(PROTOCOL_LOOP_TIMER).await;
     }
 }
 
