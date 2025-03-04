@@ -1,4 +1,5 @@
-//! This file implements the Commodore IEC protocol driver.
+//! This file implements the Commodore IEC protocol driver.  Based on
+//! the xum1541 source code.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -7,7 +8,7 @@
 #![allow(dead_code)]
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::gpio::{Input, Level, Output, Pin, Pull};
+use embassy_rp::gpio::{Flex, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
 use embassy_time::{with_timeout, Delay, Duration, Timer};
@@ -43,8 +44,8 @@ const IEC_T_FR: u32 = 60; // Min EOI acknowledge time (us)
 // An object representing the physical IEC bus.  Each Line is a pair of
 // pins, one input and one output.  Pin assignments are in `gpio.rs`.
 pub struct IecBus {
-    data: Line,
     clock: Line,
+    data: Line,
     atn: Line,
     reset: Line,
     srq: Line,
@@ -125,62 +126,88 @@ macro_rules! delay_yield {
 
 /// Represents a single bidirectional IEC bus line using separate input/output pins
 pub struct Line {
-    input_pin: Input<'static>,
-    output_pin: Output<'static>,
+    input_pin_num: u8,
+    input_pin: Option<Flex<'static>>,
+    output_pin_num: u8,
+    output_pin: Option<Flex<'static>>,
 }
 
 impl Line {
     /// Create a new Line with the specified input and output pins
-    pub fn new(input_pin: impl Pin, output_pin: impl Pin) -> Self {
+    pub fn new(
+        input_pin_num: u8,
+        input_pin: Flex<'static>,
+        output_pin_num: u8,
+        output_pin: Flex<'static>,
+    ) -> Self {
         // Initialize with input having pull-up and output low (inverted released state)
+        // Initialize the input pin as an input with pull-up
+        let mut input = input_pin;
+        input.set_as_input();
+        input.set_pull(Pull::Up);
+
+        // Initialize the output pin as an output with low level (inverted
+        // released state - which means it will be physically high on the bus)
+        let mut output = output_pin;
+        output.set_as_output();
+        output.set_low();
+
+        // Create the Line.
         Self {
-            input_pin: Input::new(input_pin, Pull::Up),
-            output_pin: Output::new(output_pin, Level::Low),
+            input_pin_num,
+            output_pin_num,
+            input_pin: Some(input),
+            output_pin: Some(output),
         }
+    }
+
+    // Called before this Line object is dropped, in order to retrieve the
+    // pins and reassign them.
+    //
+    // Great care must be taken when this function is called - if the Line
+    // object is still used after the pins are taken, it will cause a panic
+    // because the set(), release(), get() and is_set() functions all use
+    // unwrap().
+    pub fn take_pins(&mut self) -> (u8, Option<Flex<'static>>, u8, Option<Flex<'static>>) {
+        (
+            self.input_pin_num,
+            self.input_pin.take(),
+            self.output_pin_num,
+            self.output_pin.take(),
+        )
     }
 
     /// Drive the output line low (active) - ouptut is inverted pin so high
     pub fn set(&mut self) {
-        self.output_pin.set_high();
+        self.output_pin.as_mut().unwrap().set_high();
     }
 
     /// Release the output line (inactive) - output is inverted pin so low
     pub fn release(&mut self) {
-        self.output_pin.set_low();
+        self.output_pin.as_mut().unwrap().set_low();
     }
 
     /// Read the current state of the line - not inverted pin
     pub fn get(&self) -> bool {
-        self.input_pin.is_high()
+        self.input_pin.as_ref().unwrap().is_high()
     }
 
     /// Check if line is currently being driven low - inverted pin so high
     pub fn is_set(&self) -> bool {
-        self.output_pin.is_set_high()
+        self.output_pin.as_ref().unwrap().is_set_high()
     }
 }
 
 impl IecBus {
     /// Create a new IEC bus with the specified pins
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        clock_in: impl Pin,
-        clock_out: impl Pin,
-        data_in: impl Pin,
-        data_out: impl Pin,
-        atn_in: impl Pin,
-        atn_out: impl Pin,
-        reset_in: impl Pin,
-        reset_out: impl Pin,
-        srq_in: impl Pin,
-        srq_out: impl Pin,
-    ) -> Self {
+    pub fn new(clock: Line, data: Line, atn: Line, reset: Line, srq: Line) -> Self {
         let mut bus = Self {
-            data: Line::new(data_in, data_out),
-            clock: Line::new(clock_in, clock_out),
-            atn: Line::new(atn_in, atn_out),
-            reset: Line::new(reset_in, reset_out),
-            srq: Line::new(srq_in, srq_out),
+            clock,
+            data,
+            atn,
+            reset,
+            srq,
         };
 
         // Initialize all pins to released state (similar to board_init_iec)
@@ -190,6 +217,16 @@ impl IecBus {
         update_status(DisplayType::Init);
 
         bus
+    }
+
+    pub fn retrieve_pins(&mut self) -> [(u8, Option<Flex<'static>>, u8, Option<Flex<'static>>); 5] {
+        [
+            self.clock.take_pins(),
+            self.data.take_pins(),
+            self.atn.take_pins(),
+            self.reset.take_pins(),
+            self.srq.take_pins(),
+        ]
     }
 
     // DATA line control
@@ -671,6 +708,10 @@ impl ProtocolDriver for IecDriver {
 impl IecDriver {
     pub fn new(bus: IecBus) -> Self {
         Self { bus, eoi: false }
+    }
+
+    pub fn retrieve_pins(&mut self) -> [(u8, Option<Flex<'static>>, u8, Option<Flex<'static>>); 5] {
+        self.bus.retrieve_pins()
     }
 
     /// Wait for listener to release DATA line

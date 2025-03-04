@@ -6,9 +6,13 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use crate::protocol::ProtocolFlags;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
+
+use crate::iec::IecDriver;
+use crate::ieee::IeeeDriver;
+use crate::protocol::ProtocolFlags;
+use crate::tape::TapeDriver;
 
 /// Defines errors for ProtocolDriver implementations.
 #[allow(dead_code)]
@@ -90,4 +94,66 @@ pub trait ProtocolDriver {
     /// * `set` - Bitfield of lines to set (drive active)
     /// * `release` - Bitfield of lines to release (float/inactive)
     async fn set_release(&mut self, set: u8, release: u8);
+}
+
+pub enum Driver {
+    Iec(IecDriver),
+    #[allow(dead_code)]
+    Ieee(IeeeDriver),
+    #[allow(dead_code)]
+    Tape(TapeDriver),
+}
+
+impl ProtocolDriver for Driver {
+    async fn reset(&mut self, forever: bool) -> Result<(), DriverError> {
+        match self {
+            Driver::Iec(driver) => driver.reset(forever).await,
+            Driver::Ieee(driver) => driver.reset(forever).await,
+            Driver::Tape(driver) => driver.reset(forever).await,
+        }
+    }
+
+    async fn raw_write(&mut self, data: &[u8], flags: ProtocolFlags) -> Result<u16, DriverError> {
+        match self {
+            Driver::Iec(driver) => driver.raw_write(data, flags).await,
+            Driver::Ieee(driver) => driver.raw_write(data, flags).await,
+            Driver::Tape(driver) => driver.raw_write(data, flags).await,
+        }
+    }
+
+    async fn raw_read(
+        &mut self,
+        len: u16,
+        write_ep: &mut Endpoint<'static, USB, In>,
+    ) -> Result<u16, DriverError> {
+        match self {
+            Driver::Iec(driver) => driver.raw_read(len, write_ep).await,
+            Driver::Ieee(driver) => driver.raw_read(len, write_ep).await,
+            Driver::Tape(driver) => driver.raw_read(len, write_ep).await,
+        }
+    }
+
+    async fn wait(&mut self, line: u8, state: u8) -> Result<(), DriverError> {
+        match self {
+            Driver::Iec(driver) => driver.wait(line, state).await,
+            Driver::Ieee(driver) => driver.wait(line, state).await,
+            Driver::Tape(driver) => driver.wait(line, state).await,
+        }
+    }
+
+    async fn poll(&mut self) -> u8 {
+        match self {
+            Driver::Iec(driver) => driver.poll().await,
+            Driver::Ieee(driver) => driver.poll().await,
+            Driver::Tape(driver) => driver.poll().await,
+        }
+    }
+
+    async fn set_release(&mut self, set: u8, release: u8) {
+        match self {
+            Driver::Iec(driver) => driver.set_release(set, release).await,
+            Driver::Ieee(driver) => driver.set_release(set, release).await,
+            Driver::Tape(driver) => driver.set_release(set, release).await,
+        }
+    }
 }

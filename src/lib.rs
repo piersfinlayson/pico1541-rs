@@ -30,7 +30,9 @@ mod display;
 mod driver;
 mod gpio;
 mod iec;
+mod ieee;
 mod protocol;
+mod tape;
 mod task;
 mod types;
 mod usb;
@@ -184,4 +186,33 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
         info!("Core{}: Main loop", core);
         ticker.next().await;
     }
+}
+
+// Defmt panic handler
+pub fn defmt_panic_handler() -> ! {
+    // Debug build
+    #[cfg(debug_assertions)]
+    cortex_m::asm::bkpt();
+
+    // Belt and braces in debug case, required in release case
+    cortex_m::peripheral::SCB::sys_reset()
+}
+
+// Core panic handler
+pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+    // Debug build
+    #[cfg(debug_assertions)]
+    {
+        // If you have a logging mechanism set up:
+        if let Some(location) = info.location() {
+            error!("Panic at {}:{}", location.file(), location.line());
+        }
+        error!("Message: {}", info.message().as_str());
+
+        cortex_m::asm::bkpt();
+    }
+
+    // Belt and braces in debug case, required in release case
+    let _ = info;
+    cortex_m::peripheral::SCB::sys_reset()
 }

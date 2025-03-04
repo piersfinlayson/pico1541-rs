@@ -184,7 +184,7 @@ impl UsbStack {
             }
         };
         if ep_in.info().addr != IN_EP.into() {
-            panic!("Unable to allocate 0x03 as OUT endpoint");
+            defmt::panic!("Unable to allocate {} as OUT endpoint", IN_EP);
         }
 
         // Do the same for the OUT endpoint (OUT from host to device)
@@ -197,7 +197,7 @@ impl UsbStack {
             }
         };
         if ep_out.info().addr != OUT_EP.into() {
-            panic!("Unable to allocate 0x04 as OUT endpoint");
+            defmt::panic!("Unable to allocate {} as OUT endpoint", IN_EP);
         }
 
         // Return the endpoints.
@@ -209,6 +209,10 @@ impl UsbStack {
 #[embassy_executor::task]
 pub async fn usb_task() -> ! {
     // Run the USB Device runner.
-    let mut usb = USB_DEVICE.take().borrow_mut().take().expect("USB device not created");
+    let mut usb = USB_DEVICE
+        .take()
+        .borrow_mut()
+        .take()
+        .expect("USB device not created");
     usb.run().await
 }

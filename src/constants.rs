@@ -147,3 +147,9 @@ pub const CORE1_STACK_SIZE: usize = 4096;
 // stick with 1 for now, so we can only ever have a single (64-byte) packet
 // outstanding
 pub const READ_DATA_CHANNEL_SIZE: usize = 1;
+
+/// Maximum number of GPIOs supported by the device
+pub const MAX_GPIO_PINS: u8 = 30;
+
+/// Invalid (unassignable) GPIOs
+pub const INVALID_GPIO_PINS: [u8; 3] = [23, 24, 29];

@@ -10,6 +10,7 @@
 use defmt::{debug, error, info, trace, warn};
 
 use bitflags::bitflags;
+use embassy_rp::gpio::Flex;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
@@ -20,13 +21,13 @@ use embassy_usb::driver::EndpointIn;
 use heapless::Vec;
 
 use crate::constants::{
-    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_READ_SIZE, MAX_WRITE_SIZE,
+    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_GPIO_PINS, MAX_READ_SIZE, MAX_WRITE_SIZE,
     MAX_WRITE_SIZE_USIZE, PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE,
 };
 use crate::display::{update_status, DisplayType};
-use crate::driver::{DriverError, ProtocolDriver};
-use crate::gpio::GPIO;
-use crate::iec::{IecBus, IecDriver};
+use crate::driver::{Driver, DriverError, ProtocolDriver};
+use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
+use crate::iec::{IecBus, IecDriver, Line};
 use crate::usb::WRITE_EP;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
@@ -247,10 +248,19 @@ pub struct ProtocolHandler {
     transfer: Option<Transfer>,
 
     // The IEC Driver.
-    iec_driver: IecDriver,
+    driver: Option<Driver>,
 
     // Core we are running on
     core: u32,
+
+    // IEC bus pins,
+    iec_pins: IecPinConfig,
+
+    // IEEE bus pins
+    ieee_pins: IeeePinConfig,
+
+    // The GPIOs.
+    gpios: [Option<Flex<'static>>; MAX_GPIO_PINS as usize],
 }
 
 impl ProtocolHandler {
@@ -259,14 +269,127 @@ impl ProtocolHandler {
     /// The Bulk object retains the OUT (read) endpoint as this must be read
     /// from within the main Bulk future runner (which hands bulk OUT
     /// transfers).
-    pub fn new(core: u32, write_ep: Endpoint<'static, USB, In>, iec_bus: IecBus) -> Self {
+    pub async fn new(core: u32, write_ep: Endpoint<'static, USB, In>) -> Self {
+        // Get the GPIOs for all bus types
+        let (gpios, iec_pins, ieee_pins) = Self::get_gpios().await;
+
         Self {
             state: ProtocolState::Uninitialized,
             write_ep,
             transfer: None,
-            iec_driver: IecDriver::new(iec_bus),
+            driver: None,
             core,
+            iec_pins,
+            ieee_pins,
+            gpios,
         }
+    }
+
+    // Get the GPIOs that all bus types require from the GPIO object.
+    async fn get_gpios() -> (
+        [Option<Flex<'static>>; MAX_GPIO_PINS as usize],
+        IecPinConfig,
+        IeeePinConfig,
+    ) {
+        // Lock the GPIO object
+        let mut guard = GPIO.lock().await;
+        let gpio = guard.as_mut().expect("GPIO not created");
+
+        // Get the pin numbers for the IEC and IEEE buses.
+        let iec_pins = gpio.get_iec_pins();
+        let ieee_pins = gpio.get_ieee_pins();
+
+        // Create an array of Option<AnyPin> to hold the GPIOs we get.
+        let mut gpios: [Option<Flex<'static>>; MAX_GPIO_PINS as usize] = Default::default();
+
+        // Get the pins, accepting that if we've already got the pin, we don't
+        // need to (and can't) get it again.
+        for pin in iec_pins
+            .clone()
+            .into_iter()
+            .chain(ieee_pins.clone().into_iter())
+        {
+            if let Some(taken_pin) = gpio.take_flex_pin(pin) {
+                gpios[pin as usize] = Some(taken_pin);
+            } else if gpios[pin as usize].is_none() {
+                defmt::panic!("Pin {} not available", pin);
+            }
+        }
+
+        (gpios, iec_pins, ieee_pins)
+    }
+
+    fn create_iec_driver(&mut self) -> Driver {
+        // Create the lines
+        let clock_line = Line::new(
+            self.iec_pins.clock_in,
+            self.gpios[self.iec_pins.clock_in as usize].take().unwrap(),
+            self.iec_pins.clock_out,
+            self.gpios[self.iec_pins.clock_out as usize].take().unwrap(),
+        );
+        let data_line = Line::new(
+            self.iec_pins.data_in,
+            self.gpios[self.iec_pins.data_in as usize].take().unwrap(),
+            self.iec_pins.data_out,
+            self.gpios[self.iec_pins.data_out as usize].take().unwrap(),
+        );
+        let atn_line = Line::new(
+            self.iec_pins.atn_in,
+            self.gpios[self.iec_pins.atn_in as usize].take().unwrap(),
+            self.iec_pins.atn_out,
+            self.gpios[self.iec_pins.atn_out as usize].take().unwrap(),
+        );
+        let reset_line = Line::new(
+            self.iec_pins.reset_in,
+            self.gpios[self.iec_pins.reset_in as usize].take().unwrap(),
+            self.iec_pins.reset_out,
+            self.gpios[self.iec_pins.reset_out as usize].take().unwrap(),
+        );
+        let srq_line = Line::new(
+            self.iec_pins.srq_in,
+            self.gpios[self.iec_pins.srq_in as usize].take().unwrap(),
+            self.iec_pins.srq_out,
+            self.gpios[self.iec_pins.srq_out as usize].take().unwrap(),
+        );
+
+        // Create the bus
+        let iec_bus = IecBus::new(clock_line, data_line, atn_line, reset_line, srq_line);
+
+        // Create the IEC driver
+        let iec_driver = IecDriver::new(iec_bus);
+
+        // Create the generic driver object
+        Driver::Iec(iec_driver)
+    }
+
+    fn retrieve_driver_pins(&mut self, driver: &mut Driver) {
+        match driver {
+            Driver::Iec(iec) => {
+                let pins = iec.retrieve_pins();
+                for pin in pins {
+                    let (input_pin_num, input_pin, output_pin_num, output_pin) = pin;
+                    self.gpios[input_pin_num as usize] = input_pin;
+                    self.gpios[output_pin_num as usize] = output_pin;
+                }
+            }
+            Driver::Ieee(_) => unimplemented!("IEEE driver not implemented"),
+            Driver::Tape(_) => unimplemented!("Tape driver not implemented"),
+        }
+    }
+
+    // Initialize the correct driver type.
+    async fn init_driver(&mut self) {
+        // If we have a driver already we need to remove the pins and drop it.
+        if let Some(driver) = self.driver.take().as_mut() {
+            self.retrieve_driver_pins(driver);
+            // Driver gets dropped here
+        }
+
+        // Check which driver type we want to create.
+        // TODO
+
+        // Create the appropriate driver
+        self.driver = Some(self.create_iec_driver());
     }
 
     // Called from the main runner to perform an action.  This is called every
@@ -328,6 +451,11 @@ impl ProtocolHandler {
     ///   * For a READ transfer, the appropriate number of bytes is sent.  No
     ///     status is sent after the successful completion of a READ.
     pub async fn received_data(&mut self, data: &[u8], len: u16) {
+        // Check we have a driver.  If not, create one.
+        if self.driver.is_none() {
+            self.init_driver().await;
+        }
+
         // Take the transfer out here, so we don't borrow self mutably in
         // the match.  We have to put it back again, if it was Some(Transfer)
         // and it hasn't been dropped, but we will let the match arm function
@@ -441,7 +569,11 @@ impl ProtocolHandler {
 
                         let result = match proto {
                             ProtocolType::Cbm => {
-                                self.iec_driver.raw_read(len, &mut self.write_ep).await
+                                self.driver
+                                    .as_mut()
+                                    .unwrap()
+                                    .raw_read(len, &mut self.write_ep)
+                                    .await
                             }
                             _ => {
                                 error!("Unsupported read protocol: {:?}", proto);
@@ -493,7 +625,11 @@ impl ProtocolHandler {
                     // Execute the write using the correct protocol
                     let result = match write.protocol {
                         ProtocolType::Cbm => {
-                            self.iec_driver.raw_write(write.data, write.flags).await
+                            self.driver
+                                .as_mut()
+                                .unwrap()
+                                .raw_write(write.data, write.flags)
+                                .await
                         }
                         _ => {
                             error!("Unsupported protocol: {}", write.protocol);
@@ -558,7 +694,7 @@ impl ProtocolHandler {
     // Reset the ProtocolHandler.  Any outstanding transfer is cleared.
     async fn reset(&mut self) {
         info!("Protocol Handler - reset");
-        if let Err(e) = self.iec_driver.reset(false).await {
+        if let Err(e) = self.driver.as_mut().unwrap().reset(false).await {
             info!("Hit error reseting the bus {}", e);
         }
         self.transfer = None
@@ -598,12 +734,13 @@ pub async fn protocol_handler_task() -> ! {
     let core = embassy_rp::pac::SIO.cpuid().read();
     info!("Core{}: Protocol Handler task started", core);
 
-    // Create the IEC bus object
-    let iec_bus = GPIO.lock().await.as_mut().expect("GPIO not created").create_iec_bus();
-
     // Create and spawn the ProtocolHandler task.
-    let write_ep = WRITE_EP.take().borrow_mut().take().expect("Write endpoint not created");
-    let mut protocol_handler = ProtocolHandler::new(core, write_ep, iec_bus);
+    let write_ep = WRITE_EP
+        .take()
+        .borrow_mut()
+        .take()
+        .expect("Write endpoint not created");
+    let mut protocol_handler = ProtocolHandler::new(core, write_ep).await;
 
     // Register with the watchdog
     register_task(TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER);

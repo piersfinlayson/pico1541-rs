@@ -174,7 +174,12 @@ pub async fn status_task() -> ! {
     info!("Core{}: Status display task started", core);
 
     // Create the status display object
-    let led_pin = GPIO.lock().await.as_mut().expect("GPIO not created").get_status_display_pin();
+    let led_pin = GPIO
+        .lock()
+        .await
+        .as_mut()
+        .expect("GPIO not created")
+        .get_status_display_pin();
     let mut display = StatusDisplay::new(led_pin);
 
     // Register with the watchdog

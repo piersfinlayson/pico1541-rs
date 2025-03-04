@@ -7,9 +7,10 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+use crate::constants::{INVALID_GPIO_PINS, MAX_GPIO_PINS};
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::gpio::{AnyPin, Pin};
+use embassy_rp::gpio::{AnyPin, Flex, Pin};
 use embassy_rp::peripherals::{
     PIN_0, PIN_1, PIN_10, PIN_11, PIN_12, PIN_13, PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PIN_19,
     PIN_2, PIN_20, PIN_21, PIN_22, PIN_23, PIN_24, PIN_25, PIN_26, PIN_27, PIN_28, PIN_29, PIN_3,
@@ -17,8 +18,6 @@ use embassy_rp::peripherals::{
 };
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-
-use crate::iec::IecBus;
 
 //
 // Statics
@@ -35,18 +34,8 @@ pub mod config {
     pub fn standard() -> PinConfig {
         PinConfig {
             status_display_pin: 25,
-            iec_pins: IecPinConfig {
-                clock_in: 2,
-                clock_out: 3,
-                data_in: 4,
-                data_out: 5,
-                atn_in: 6,
-                atn_out: 7,
-                reset_in: 8,
-                reset_out: 9,
-                srq_in: 10,
-                srq_out: 11,
-            },
+            iec_pins: iec(),
+            ieee_pins: ieee(),
         }
     }
 
@@ -54,40 +43,129 @@ pub mod config {
     pub fn pico1541w() -> PinConfig {
         PinConfig {
             status_display_pin: 0,
-            iec_pins: IecPinConfig {
-                clock_in: 2,
-                clock_out: 3,
-                data_in: 4,
-                data_out: 5,
-                atn_in: 6,
-                atn_out: 7,
-                reset_in: 8,
-                reset_out: 9,
-                srq_in: 10,
-                srq_out: 11,
-            },
+            iec_pins: iec(),
+            ieee_pins: ieee(),
+        }
+    }
+
+    fn iec() -> IecPinConfig {
+        IecPinConfig {
+            clock_in: 2,
+            clock_out: 3,
+            data_in: 4,
+            data_out: 5,
+            atn_in: 6,
+            atn_out: 7,
+            reset_in: 8,
+            reset_out: 9,
+            srq_in: 10,
+            srq_out: 11,
+        }
+    }
+
+    fn ieee() -> IeeePinConfig {
+        IeeePinConfig {
+            nrfd_in: 2,
+            nrfd_out: 3,
+            ndac_in: 4,
+            ndac_out: 5,
+            atn_in: 6,
+            atn_out: 7,
+            ifc_in: 8,
+            ifc_out: 9,
+            srq_in: 10,
+            srq_out: 11,
+            d_io: [12, 13, 14, 15, 16, 17, 18, 19],
         }
     }
 }
 
 /// Pin configuration for different device types
 pub struct PinConfig {
-    pub status_display_pin: usize,
+    pub status_display_pin: u8,
     pub iec_pins: IecPinConfig,
+    pub ieee_pins: IeeePinConfig,
 }
 
 /// IEC Bus pin configuration
+#[derive(Clone)]
 pub struct IecPinConfig {
-    pub clock_in: usize,
-    pub clock_out: usize,
-    pub data_in: usize,
-    pub data_out: usize,
-    pub atn_in: usize,
-    pub atn_out: usize,
-    pub reset_in: usize,
-    pub reset_out: usize,
-    pub srq_in: usize,
-    pub srq_out: usize,
+    pub clock_in: u8,
+    pub clock_out: u8,
+    pub data_in: u8,
+    pub data_out: u8,
+    pub atn_in: u8,
+    pub atn_out: u8,
+    pub reset_in: u8,
+    pub reset_out: u8,
+    pub srq_in: u8,
+    pub srq_out: u8,
+}
+
+impl IntoIterator for IecPinConfig {
+    type Item = u8;
+    type IntoIter = core::array::IntoIter<u8, 10>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        [
+            self.clock_in,
+            self.clock_out,
+            self.data_in,
+            self.data_out,
+            self.atn_in,
+            self.atn_out,
+            self.reset_in,
+            self.reset_out,
+            self.srq_in,
+            self.srq_out,
+        ]
+        .into_iter()
+    }
+}
+
+/// IEEE Bus pin configuration
+#[derive(Clone)]
+pub struct IeeePinConfig {
+    pub nrfd_in: u8,
+    pub nrfd_out: u8,
+    pub ndac_in: u8,
+    pub ndac_out: u8,
+    pub atn_in: u8,
+    pub atn_out: u8,
+    pub ifc_in: u8,
+    pub ifc_out: u8,
+    pub srq_in: u8,
+    pub srq_out: u8,
+    pub d_io: [u8; 8],
+}
+
+impl IntoIterator for IeeePinConfig {
+    type Item = u8;
+    type IntoIter = core::array::IntoIter<u8, 18>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        [
+            self.nrfd_in,
+            self.nrfd_out,
+            self.ndac_in,
+            self.ndac_out,
+            self.atn_in,
+            self.atn_out,
+            self.ifc_in,
+            self.ifc_out,
+            self.srq_in,
+            self.srq_out,
+            self.d_io[0],
+            self.d_io[1],
+            self.d_io[2],
+            self.d_io[3],
+            self.d_io[4],
+            self.d_io[5],
+            self.d_io[6],
+            self.d_io[7],
+        ]
+        .into_iter()
+    }
 }
 
 /// Default pin configuration
@@ -107,7 +185,7 @@ impl Default for PinConfig {
 
 /// Object which provides methods to create objects that require GPIO pins.
 pub struct Gpio {
-    pins: [Option<AnyPin>; 30],
+    pins: [Option<AnyPin>; MAX_GPIO_PINS as usize],
     config: PinConfig,
 }
 
@@ -150,7 +228,7 @@ impl Gpio {
         let config = config.unwrap_or_default();
 
         // Convert all pins to AnyPin and place in array
-        let pins_array = [
+        let mut pins_array = [
             Some(pin0.degrade()),
             Some(pin1.degrade()),
             Some(pin2.degrade()),
@@ -183,6 +261,12 @@ impl Gpio {
             Some(pin29.degrade()),
         ];
 
+        // Go through the pins and throw away any that are invalid
+        // (unassignable).
+        for pin in INVALID_GPIO_PINS.iter() {
+            pins_array[*pin as usize] = None;
+        }
+
         let gpio = Self {
             pins: pins_array,
             config,
@@ -201,30 +285,33 @@ impl Gpio {
 
     /// Get the pin used for the status display.
     pub fn get_status_display_pin(&mut self) -> AnyPin {
-        self.take_pin(self.config.status_display_pin)
+        match self.take_pin(self.config.status_display_pin) {
+            Some(pin) => pin,
+            None => panic!(
+                "Status display pin {} already taken",
+                self.config.status_display_pin
+            ),
+        }
     }
 
-    /// Creates IecBus object.
-    pub fn create_iec_bus(&mut self) -> IecBus {
-        // Create the IEC bus object from the configured pins
-        IecBus::new(
-            self.take_pin(self.config.iec_pins.clock_in),
-            self.take_pin(self.config.iec_pins.clock_out),
-            self.take_pin(self.config.iec_pins.data_in),
-            self.take_pin(self.config.iec_pins.data_out),
-            self.take_pin(self.config.iec_pins.atn_in),
-            self.take_pin(self.config.iec_pins.atn_out),
-            self.take_pin(self.config.iec_pins.reset_in),
-            self.take_pin(self.config.iec_pins.reset_out),
-            self.take_pin(self.config.iec_pins.srq_in),
-            self.take_pin(self.config.iec_pins.srq_out),
-        )
+    /// Get the IEC pins
+    pub fn get_iec_pins(&self) -> IecPinConfig {
+        self.config.iec_pins.clone()
+    }
+
+    /// Get the IEEE pins
+    pub fn get_ieee_pins(&self) -> IeeePinConfig {
+        self.config.ieee_pins.clone()
+    }
+
+    pub fn take_flex_pin(&mut self, index: u8) -> Option<Flex<'static>> {
+        self.take_pin(index).map(Flex::new)
     }
 
     /// Helper to take a pin by index
-    fn take_pin(&mut self, index: usize) -> AnyPin {
-        match self.pins[index].take() {
-            Some(pin) => pin,
+    fn take_pin(&mut self, index: u8) -> Option<AnyPin> {
+        match self.pins[index as usize].take() {
+            Some(pin) => Some(pin),
             None => {
                 error!("Pin {} already taken", index);
                 panic!()

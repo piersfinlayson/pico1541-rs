@@ -111,7 +111,11 @@ pub async fn bulk_task() -> ! {
     info!("Core{}: Bulk task started", core);
 
     // Create the bulk object.
-    let read_ep = READ_EP.take().borrow_mut().take().expect("Read endpoint not created");
+    let read_ep = READ_EP
+        .take()
+        .borrow_mut()
+        .take()
+        .expect("Read endpoint not created");
     let mut bulk = Bulk::new(read_ep);
 
     // Start Bulks' runner.
