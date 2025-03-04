@@ -747,8 +747,8 @@ pub async fn protocol_handler_task() -> ! {
 
     // Create and spawn the ProtocolHandler task.
     let write_ep = WRITE_EP
-        .take()
-        .borrow_mut()
+        .lock()
+        .await
         .take()
         .expect("Write endpoint not created");
     let mut protocol_handler = ProtocolHandler::new(core, write_ep).await;

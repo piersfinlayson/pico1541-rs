@@ -41,7 +41,8 @@ mod watchdog;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
-use embassy_time::Ticker;
+use embassy_time::{Ticker, Delay};
+use embedded_hal::delay::DelayNs;
 
 use constants::LOOP_LOG_INTERVAL;
 use dev_info::get_serial;
@@ -64,7 +65,8 @@ use watchdog::{watchdog_task, Watchdog};
 // - Use ConstStaticCell for statics that can be initialized at compile time.
 //   Note that initialization is different than mutability.  A ConstStaticCell
 //   can be mutable, when used with RefCell, but it must be initialized at
-//   compile time.
+//   compile time.  It also cannot be take()n and then modified and then
+//   take()n again.
 //
 // - If your static will be immutable, that is all that is required.
 //
@@ -161,7 +163,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
 
     // Create the USB stack and the Bulk object.  We do this at the same time
     // because Bulk needs the endpoints from the USB Stack creation.
-    UsbStack::create_static(p_usb, usb_serial);
+    let usb = UsbStack::create_static(p_usb, usb_serial).await;
 
     // Spawn the Status Display and USB tasks on core 0.
     //
@@ -173,7 +175,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // See [`task.rs`] for an explanation of the multi-core strategy.
     spawn_or_reboot(spawner.spawn(watchdog_task()), "Watchdog");
 
-    spawn_or_reboot(spawner.spawn(usb_task()), "USB");
+    spawn_or_reboot(spawner.spawn(usb_task(usb)), "USB");
 
     // Spawn the core1 task to start the Bulk task and the core Commodore
     // protocol handling.
@@ -190,12 +192,9 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
 
 // Defmt panic handler
 pub fn defmt_panic_handler() -> ! {
-    // Debug build
-    #[cfg(debug_assertions)]
-    cortex_m::asm::bkpt();
+    error!("Hit defmt panic handler");
 
-    // Belt and braces in debug case, required in release case
-    cortex_m::peripheral::SCB::sys_reset()
+    force_reboot()
 }
 
 // Core panic handler
@@ -208,11 +207,34 @@ pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
             error!("Panic at {}:{}", location.file(), location.line());
         }
         error!("Message: {}", info.message().as_str());
-
-        cortex_m::asm::bkpt();
     }
 
-    // Belt and braces in debug case, required in release case
-    let _ = info;
-    cortex_m::peripheral::SCB::sys_reset()
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = info;
+    }   
+
+    force_reboot()
+}
+
+// A relibale rebooting function
+fn force_reboot() -> ! {
+    // cortex_m::peripheral::SCB::sys_reset();
+
+    // sys_reset() doesn't work on core 1 so use the watchdog - get it.
+    let mut watchdog = unsafe {
+        embassy_rp::watchdog::Watchdog::new(embassy_rp::peripherals::WATCHDOG::steal())
+    };
+
+    // Pause, or if there's a panic early on the probe may not be able to 
+    // connect to the device as it'll be restarting too quickly.
+    Delay.delay_us(1000000); // Pause or the probe 
+
+    // Now reset
+    watchdog.trigger_reset();
+
+    // Loop forever to ensure this function doesn't return
+    loop {
+        cortex_m::asm::nop();
+    }
 }

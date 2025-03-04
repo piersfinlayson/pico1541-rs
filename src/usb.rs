@@ -4,14 +4,15 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use core::cell::RefCell;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver as RpUsbDriver, Endpoint, In, InterruptHandler, Out};
 use embassy_usb::descriptor::{SynchronizationType, UsageType};
 use embassy_usb::driver::{Driver, Endpoint as DriverEndpoint, EndpointType};
 use embassy_usb::{Builder, Config, UsbDevice};
-use static_cell::ConstStaticCell;
+use embassy_sync::mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use static_cell::{StaticCell, ConstStaticCell};
 
 use crate::constants::{
     MAX_EP_PACKET_SIZE, MAX_PACKET_SIZE_0, USB_CLASS, USB_POWER_MA, USB_PROTOCOL, USB_SUB_CLASS,
@@ -25,18 +26,21 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
 });
 
-// The USB_DEVICE is primarily stored as a static to allow us to spawn a task
-// using the USB runner.
-static USB_DEVICE: ConstStaticCell<RefCell<Option<UsbDevice<'static, RpUsbDriver<'static, USB>>>>> =
-    ConstStaticCell::new(RefCell::new(None));
+// The USB_DEVICE is stored as a static to allow us to spawn a task using the
+// USB runner.  We can't store as a Mutex to allow ourselves to take it from
+// the static later (in usb_task()) because it isn't Send safe.  So instead we
+// have to return a mutable reference to it (which StaticCell::init()
+// provides) and pass that into the usb_task().
+static USB_DEVICE: StaticCell<UsbDevice<'static, RpUsbDriver<'static, USB>>> =
+    StaticCell::new();
 
 // Statics for the read and write endpoints.  These are used to store the
-// endpoints so we can take them when creating the Bulk and ProtocolHandler
-// objects.
-pub static READ_EP: ConstStaticCell<RefCell<Option<Endpoint<'static, USB, Out>>>> =
-    ConstStaticCell::new(RefCell::new(None));
-pub static WRITE_EP: ConstStaticCell<RefCell<Option<Endpoint<'static, USB, In>>>> =
-    ConstStaticCell::new(RefCell::new(None));
+// endpoints so we can take them later when creating the Bulk and
+// ProtocolHandler and objects.
+pub static READ_EP: Mutex<CriticalSectionRawMutex, Option<Endpoint<'static, USB, Out>>> =
+    Mutex::new(None);
+pub static WRITE_EP: Mutex<CriticalSectionRawMutex, Option<Endpoint<'static, USB, In>>> =
+    Mutex::new(None);
 
 // The following statics are used to store the USB descriptor buffers and
 // control buffer.  We store them as statics to avoid lifetime issues when
@@ -62,7 +66,7 @@ impl UsbStack {
     /// - `USB` - The USB device
     /// - `READ_EP` - The read (Out) endpoint
     /// - `WRITE_EP` - The write (In) endpoint
-    pub fn create_static(p_usb: USB, serial: &'static str) {
+    pub async fn create_static(p_usb: USB, serial: &'static str) -> &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>> {
         // Create a new USB device
         let mut driver = RpUsbDriver::new(p_usb, Irqs);
 
@@ -143,11 +147,13 @@ impl UsbStack {
         // Build the UsbDevice and store it as a Static so we can spawn a task
         // with it.
         let usb = builder.build();
-        USB_DEVICE.take().borrow_mut().replace(usb);
+        let usb = USB_DEVICE.init(usb);
 
         // Store the endpoints
-        READ_EP.take().borrow_mut().replace(ep_out);
-        WRITE_EP.take().borrow_mut().replace(ep_in);
+        READ_EP.lock().await.replace(ep_out);
+        WRITE_EP.lock().await.replace(ep_in);
+
+        usb
     }
 
     // Used to allocate specific endpoint numbers.  We do this to maintain
@@ -207,12 +213,7 @@ impl UsbStack {
 
 // Method to run the USB stack.
 #[embassy_executor::task]
-pub async fn usb_task() -> ! {
+pub async fn usb_task(usb: &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>>) -> ! {
     // Run the USB Device runner.
-    let mut usb = USB_DEVICE
-        .take()
-        .borrow_mut()
-        .take()
-        .expect("USB device not created");
     usb.run().await
 }

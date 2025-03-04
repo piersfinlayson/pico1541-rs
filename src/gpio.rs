@@ -310,12 +310,6 @@ impl Gpio {
 
     /// Helper to take a pin by index
     fn take_pin(&mut self, index: u8) -> Option<AnyPin> {
-        match self.pins[index as usize].take() {
-            Some(pin) => Some(pin),
-            None => {
-                error!("Pin {} already taken", index);
-                panic!()
-            }
-        }
+        self.pins[index as usize].take()
     }
 }
