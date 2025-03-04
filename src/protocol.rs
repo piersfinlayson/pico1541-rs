@@ -382,8 +382,8 @@ impl ProtocolHandler {
         // If we have a driver already we need to remove the pins and drop it.
         if let Some(driver) = self.driver.take().as_mut() {
             self.retrieve_driver_pins(driver);
-            // Driver gets dropped here
         }
+        // Existing driver gets dropped here
 
         // Check which driver type we want to create.
         // TODO
@@ -451,7 +451,8 @@ impl ProtocolHandler {
     ///   * For a READ transfer, the appropriate number of bytes is sent.  No
     ///     status is sent after the successful completion of a READ.
     pub async fn received_data(&mut self, data: &[u8], len: u16) {
-        // Check we have a driver.  If not, create one.
+        // Check we have a driver.  If not, create one.  This makes it safe to
+        // unwrap() self.driver later in this function and sub-functions.
         if self.driver.is_none() {
             self.init_driver().await;
         }
@@ -694,9 +695,19 @@ impl ProtocolHandler {
     // Reset the ProtocolHandler.  Any outstanding transfer is cleared.
     async fn reset(&mut self) {
         info!("Protocol Handler - reset");
+
+        // Initialize the driver if not already initialized
+        let driver = self.driver.as_mut();
+        if driver.is_none() {
+            self.init_driver().await;
+        }
+
+        // Reset the bus
         if let Err(e) = self.driver.as_mut().unwrap().reset(false).await {
             info!("Hit error reseting the bus {}", e);
         }
+
+        // Clear out any existing transfers
         self.transfer = None
     }
 
