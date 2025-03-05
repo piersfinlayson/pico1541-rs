@@ -9,6 +9,7 @@
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
 use embassy_time::Duration;
+use static_assertions::const_assert;
 
 //
 // Watchdog timers
@@ -149,6 +150,10 @@ pub const PICO1541_FIRMWARE_VERSION: u8 = 1;
 //
 // Other constants
 //
+
+// Const for the data buffer size within UsbDataTransfer
+pub const TRANSFER_DATA_BUFFER_SIZE: usize = MAX_EP_PACKET_SIZE_USIZE * 2;
+const_assert!(MAX_EP_PACKET_SIZE_USIZE < TRANSFER_DATA_BUFFER_SIZE);
 
 /// The size (in bytes) of the stack for core 1.
 pub const CORE1_STACK_SIZE: usize = 4096;

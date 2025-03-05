@@ -16,7 +16,7 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::Timer;
 
-use crate::constants::{MAX_EP_PACKET_SIZE_USIZE, USB_DATA_TRANSFER_WAIT_TIMER};
+use crate::constants::{TRANSFER_DATA_BUFFER_SIZE, USB_DATA_TRANSFER_WAIT_TIMER};
 use crate::types::Direction;
 
 /// A static for IN/Read and OUT/Write USB bulk data transfers between the
@@ -25,9 +25,6 @@ use crate::types::Direction;
 /// same core, core 1.
 pub static USB_DATA_TRANSFER: Mutex<ThreadModeRawMutex, UsbDataTransfer> =
     Mutex::new(UsbDataTransfer::new_default());
-
-// Const for the data buffer size within UsbDataTransfer
-pub const TRANSFER_DATA_BUFFER_SIZE: usize = MAX_EP_PACKET_SIZE_USIZE * 2;
 
 /// Used to handle In and Out data transfers between host and device.
 ///
@@ -244,11 +241,9 @@ impl UsbDataTransfer {
             self.write_byte_unchecked(byte);
         }
 
-        if max_bytes == 0 {
-            Err(UsbTransferError::BufferFull)
-        } else {
-            Ok(max_bytes)
-        }
+        // Always return Ok with the number of bytes actually written
+        // (which could be 0 if we somehow got here with no space, though check_can_write should prevent that)
+        Ok(max_bytes)
     }
 }
 

@@ -18,7 +18,6 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointIn;
-use static_assertions::const_assert;
 
 use crate::constants::{
     LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_GPIO_PINS, MAX_WRITE_SIZE_USIZE,
@@ -29,9 +28,7 @@ use crate::display::{update_status, DisplayType};
 use crate::driver::{raw_read_task, raw_write_task, Driver, ProtocolDriver, DRIVER};
 use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
 use crate::iec::{IecBus, IecDriver, Line};
-use crate::transfer::{
-    UsbDataTransfer, UsbTransferResponse, TRANSFER_DATA_BUFFER_SIZE, USB_DATA_TRANSFER,
-};
+use crate::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
 use crate::types::Direction;
 use crate::usb::WRITE_EP;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
@@ -237,11 +234,10 @@ impl ProtocolHandler {
     // Initialize the correct driver type.
     async fn init_driver(&mut self) {
         let mut guard = DRIVER.lock().await;
-        let mut guard = guard.as_mut();
 
         // If we have a driver already we need to remove the pins and drop it.
-        if let Some(driver) = guard.take() {
-            self.retrieve_driver_pins(driver);
+        if let Some(mut driver) = guard.take() {
+            self.retrieve_driver_pins(&mut driver);
         }
         // Existing driver gets dropped here
 
@@ -249,7 +245,8 @@ impl ProtocolHandler {
         // TODO
 
         // Create the appropriate driver
-        guard.replace(&mut self.create_iec_driver());
+        let driver = self.create_iec_driver();
+        *guard = Some(driver);
     }
 
     // Called from the main runner to perform an action.  This is called every
@@ -313,17 +310,15 @@ impl ProtocolHandler {
     pub async fn received_data(&mut self, data: &[u8], len: u16) {
         // Check we have a driver.  If not, create one.  This makes it safe to
         // unwrap() self.driver later in this function and sub-functions.
-        // We have to try this because it is possible there is a transfer
+        // We have to "try" this because it is possible there is a transfer
         // outstanding and the driver is locked because of that.)
         if let Ok(true) = Driver::try_is_none() {
+            debug!("No driver - create it");
             self.init_driver().await;
         }
 
         // Find out whether we have a transfer underway
-        let dir = UsbDataTransfer::lock_direction().await;
-
-        // Now handle the data based on the transfer state.
-        match dir {
+        match UsbDataTransfer::lock_direction().await {
             // No transfer is underway - this is the start of a new command.
             None => self.handle_new_command(data, len).await,
 
@@ -568,10 +563,13 @@ impl ProtocolHandler {
                 let response = guard.get_response();
 
                 // An IN/read transfer - first see if there's bytes to send
-                let outstanding_bytes = guard.outstanding_bytes();
-                const_assert!(MAX_EP_PACKET_SIZE_USIZE < TRANSFER_DATA_BUFFER_SIZE);
-                if outstanding_bytes > MAX_EP_PACKET_SIZE_USIZE
-                    || response != UsbTransferResponse::None
+                let mut outstanding_bytes = guard.outstanding_bytes();
+
+                // If there's as much as an endpoint packet size to send, we
+                // will send.  Or, if we're done and there are bytes to send,
+                // send them.
+                if outstanding_bytes >= MAX_EP_PACKET_SIZE_USIZE
+                    || (response != UsbTransferResponse::None && outstanding_bytes > 0)
                 {
                     // We either have a full 64 bytes to send, or we're done
                     // so need to send anyway.  We only send a max of 64 bytes
@@ -581,25 +579,39 @@ impl ProtocolHandler {
                     // Use a temporary buffer to get the bytes to send into.
                     let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
 
-                    // Figure out how many bytes to get
-                    let bytes_to_send = if response == UsbTransferResponse::None {
+                    // Figure out how many bytes to send
+                    let bytes_to_send = if outstanding_bytes > MAX_EP_PACKET_SIZE_USIZE {
                         MAX_EP_PACKET_SIZE_USIZE
                     } else {
                         outstanding_bytes
                     };
 
-                    // Get the bytes
                     let result = guard.try_get_next_bytes(&mut buffer[..bytes_to_send]);
 
                     match result {
                         Some(size) => {
                             // Send the bytes
                             let result = self.write_ep.write(&buffer[..size]).await;
-                            if let Err(e) = result {
-                                warn!("Failed to send IN data {}", e);
+                            match result {
+                                Ok(_) => {
+                                    // We sent the bytes - update the outstanding
+                                    // bytes count
+                                    outstanding_bytes -= size;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to send IN data {}", e);
+                                }
                             }
                         }
-                        None => warn!("Failed to send IN data - no bytes provided"),
+                        None => {
+                            warn!("Failed to get bytes to send");
+                        }
+                    }
+
+                    if outstanding_bytes > 0 {
+                        // There are still bytes to send - we'll be
+                        // rescheduled to send them soon.
+                        return;
                     }
                 }
 
