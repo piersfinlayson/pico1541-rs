@@ -24,11 +24,11 @@ use crate::constants::{
     PROTOCOL_LOOP_TIMER, PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE,
     USB_DATA_TRANSFER_WAIT_TIMER,
 };
-use crate::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
 use crate::display::{update_status, DisplayType};
 use crate::driver::{raw_read_task, raw_write_task, Driver, ProtocolDriver, DRIVER};
 use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
 use crate::iec::{IecBus, IecDriver, Line};
+use crate::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
 use crate::types::Direction;
 use crate::usb::WRITE_EP;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
@@ -317,21 +317,21 @@ impl ProtocolHandler {
         }
 
         // Find out whether we have a transfer underway
-        let (xfer_active, xfer_direction) = UsbDataTransfer::lock_is_active_and_direction().await;
+        let dir = UsbDataTransfer::lock_direction().await;
 
         // Now handle the data based on the transfer state.
-        match (xfer_active, xfer_direction) {
+        match dir {
             // No transfer is underway - this is the start of a new command.
-            (false, _) => self.handle_new_command(data, len).await,
+            None => self.handle_new_command(data, len).await,
 
             // An Out (write) transfer is underway - handle the incoming data.
-            (true, Direction::Out) => self.handle_write_data(data, len).await,
+            Some(Direction::Out) => self.handle_write_data(data, len).await,
 
             // An In (read) transfer is underway - ignore the incoming data
             // because only a WRITE or READ can be underway at once.  Because
             // we're here a read is underway, and hence we should be sending
             // data out, not receiving it.
-            (true, Direction::In) => {
+            Some(Direction::In) => {
                 warn!("Received data during READ - ignoring");
             }
         }
@@ -498,12 +498,12 @@ impl ProtocolHandler {
         // Lock the data transfer for this function
         let mut guard = USB_DATA_TRANSFER.lock().await;
 
-        if !guard.is_active() {
-            return;
-        }
-
         match guard.direction() {
-            Direction::Out => {
+            // No transfer is active
+            None => (),
+
+            // OUT/write transfer
+            Some(Direction::Out) => {
                 // An OUT/write transfer - see if it's done
                 let response = guard.get_response();
                 if response != UsbTransferResponse::None {
@@ -536,7 +536,9 @@ impl ProtocolHandler {
                     guard.clear();
                 }
             }
-            Direction::In => {
+
+            // IN/Read transfer
+            Some(Direction::In) => {
                 // Get the transfer status - we'll use in both steps below
                 let response = guard.get_response();
 

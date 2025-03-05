@@ -39,12 +39,9 @@ pub const TRANSFER_DATA_BUFFER_SIZE: usize = MAX_EP_PACKET_SIZE_USIZE * 2;
 /// operations with relinquishing the lock) or call the associated functions,
 /// which will handle locking.
 pub struct UsbDataTransfer {
-    /// Whether a transfer is active
-    active: bool,
-
     /// Which direction the transfer is in.  In means from device to host, Out
-    /// means from host to device.
-    direction: Direction,
+    /// means from host to device.  None means the transfer is inactive.
+    direction: Option<Direction>,
 
     /// Total expected bytes in this operation
     expected_bytes: u16,
@@ -67,16 +64,13 @@ pub struct UsbDataTransfer {
     response: UsbTransferResponse,
 }
 
-
 // Public instance methods
 impl UsbDataTransfer {
     /// Implement a default.  Needs to be a const fn so it can be used in the
     /// static.
     const fn new_default() -> Self {
         Self {
-            active: false,
-            // For enums you need to specify the variant explicitly
-            direction: Direction::Out,
+            direction: None,
             expected_bytes: 0,
             received_bytes: 0,
             data: [0; TRANSFER_DATA_BUFFER_SIZE],
@@ -88,8 +82,7 @@ impl UsbDataTransfer {
 
     /// Initialize the transfer
     pub fn init(&mut self, direction: Direction, expected_bytes: u16) {
-        self.active = true;
-        self.direction = direction;
+        self.direction = Some(direction);
         self.expected_bytes = expected_bytes;
         self.received_bytes = 0;
         self.read_pos = 0;
@@ -98,21 +91,15 @@ impl UsbDataTransfer {
 
     /// Clear the transfer
     pub fn clear(&mut self) {
-        self.active = false;
-        self.direction = Direction::In;
+        self.direction = None;
         self.expected_bytes = 0;
         self.received_bytes = 0;
         self.read_pos = 0;
         self.valid_bytes = 0;
     }
 
-    /// Get whether the transfer is active
-    pub fn is_active(&self) -> bool {
-        self.active
-    }
-
     /// Get the direction of the transfer
-    pub fn direction(&self) -> Direction {
+    pub fn direction(&self) -> Option<Direction> {
         self.direction
     }
 
@@ -161,7 +148,7 @@ impl UsbDataTransfer {
 
     /// Try to get next byte
     pub fn try_get_next_byte(&mut self) -> Option<u8> {
-        if !self.active {
+        if self.direction.is_none() {
             defmt::panic!("Tried to get a byte from an inactive transfer");
         }
 
@@ -180,8 +167,9 @@ impl UsbDataTransfer {
     ///
     /// Returns None if the transfer isn't active or if there are no bytes available.
     pub fn try_get_next_bytes(&mut self, buffer: &mut [u8]) -> Option<usize> {
-        if !self.active {
-            defmt::panic!("Tried to get bytes from an inactive transfer");
+        if self.direction.is_none() {
+            warn!("Tried to get bytes from an inactive transfer");
+            return None;
         }
 
         if self.valid_bytes == 0 {
@@ -279,22 +267,10 @@ impl UsbDataTransfer {
         guard.clear()
     }
 
-    /// Get whether the transfer is active
-    pub async fn lock_is_active() -> bool {
-        let guard = USB_DATA_TRANSFER.lock().await;
-        guard.is_active()
-    }
-
     /// Get the direction of the transfer
-    pub async fn lock_direction() -> Direction {
+    pub async fn lock_direction() -> Option<Direction> {
         let guard = USB_DATA_TRANSFER.lock().await;
         guard.direction()
-    }
-
-    /// Get both whether this transfer is active and the direction
-    pub async fn lock_is_active_and_direction() -> (bool, Direction) {
-        let guard = USB_DATA_TRANSFER.lock().await;
-        (guard.is_active(), guard.direction())
     }
 
     /// Get the response

@@ -11,11 +11,11 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 
-use crate::transfer::{UsbDataTransfer, UsbTransferResponse};
 use crate::iec::IecDriver;
 use crate::ieee::IeeeDriver;
 use crate::protocol::{ProtocolFlags, ProtocolType};
 use crate::tape::TapeDriver;
+use crate::transfer::{UsbDataTransfer, UsbTransferResponse};
 
 // A static for the current driver in use.
 pub static DRIVER: Mutex<ThreadModeRawMutex, Option<Driver>> = Mutex::new(None);

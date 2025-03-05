@@ -13,10 +13,10 @@ use embassy_time::{with_timeout, Delay, Duration, Timer};
 use embedded_hal::delay::DelayNs;
 
 use crate::constants::{MAX_EP_PACKET_SIZE, USB_DATA_TRANSFER_WAIT_TIMER};
-use crate::transfer::UsbDataTransfer;
 use crate::display::{update_status, DisplayType};
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::{ProtocolFlags, ProtocolType};
+use crate::transfer::UsbDataTransfer;
 use crate::watchdog::{feed_watchdog, TaskId};
 
 //
