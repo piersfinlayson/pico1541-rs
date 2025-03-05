@@ -46,11 +46,16 @@ pub const STATUS_DISPLAY_TIMER: Duration = Duration::from_millis(50);
 // alive.
 pub const LOOP_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How often the protocol handler task pauses so other tasks can run.
-pub const PROTOCOL_LOOP_TIMER: Duration = Duration::from_millis(1);
+/// How often the protocol handler task pauses so other tasks can run.  We
+/// make this low, so it can shuffle data between the USB endpoint and the
+/// protocol handler, but it doesn't need to be a low as the
+/// USB_DATA_TRANSFER_WAIT_TIMER, as the USB endpoint deals with 64 bytes at
+/// a time, whereas that may deal with single bytes at a time.
+pub const PROTOCOL_LOOP_TIMER: Duration = Duration::from_micros(10);
 
 /// How long to wait between checking whether a byte has become available in
-/// the USB data transfer object.
+/// the USB data transfer object.  This is as low as we an make it, because
+/// we're handling individual bytes.
 pub const USB_DATA_TRANSFER_WAIT_TIMER: Duration = Duration::from_micros(1);
 
 //

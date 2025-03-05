@@ -18,6 +18,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointIn;
+use static_assertions::const_assert;
 
 use crate::constants::{
     LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_GPIO_PINS, MAX_WRITE_SIZE_USIZE,
@@ -28,7 +29,9 @@ use crate::display::{update_status, DisplayType};
 use crate::driver::{raw_read_task, raw_write_task, Driver, ProtocolDriver, DRIVER};
 use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
 use crate::iec::{IecBus, IecDriver, Line};
-use crate::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
+use crate::transfer::{
+    UsbDataTransfer, UsbTransferResponse, TRANSFER_DATA_BUFFER_SIZE, USB_DATA_TRANSFER,
+};
 use crate::types::Direction;
 use crate::usb::WRITE_EP;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
@@ -484,6 +487,29 @@ impl ProtocolHandler {
         UsbDataTransfer::lock_clear().await;
     }
 
+    // Get the appropriate Status for a transfer.  Neither None (no transfer)
+    // nor IN (read) transfers return a Status, so those return None.  OUT
+    // (write) transfers do, until it isn't finished.
+    fn get_status_from_transfer(transfer: &UsbDataTransfer) -> Option<Status> {
+        match transfer.direction() {
+            // IN/Read doesn't return a Status
+            None | Some(Direction::In) => None,
+
+            // OUT/Write
+            Some(Direction::Out) => match transfer.get_response() {
+                UsbTransferResponse::Ok => Some(Status {
+                    code: StatusCode::Ok,
+                    value: transfer.expected_bytes(),
+                }),
+                UsbTransferResponse::Error => Some(Status {
+                    code: StatusCode::Error,
+                    value: 0,
+                }),
+                UsbTransferResponse::None => None,
+            },
+        }
+    }
+
     // See if we have an in-progress transfer, and if so, see if it needs any
     // actioning.
     //
@@ -504,27 +530,26 @@ impl ProtocolHandler {
 
             // OUT/write transfer
             Some(Direction::Out) => {
-                // An OUT/write transfer - see if it's done
-                let response = guard.get_response();
-                if response != UsbTransferResponse::None {
-                    // It is done
-                    debug!("OUT transfer complete ({})", response);
+                // An OUT/write transfer - see if it's done.  This is a way
+                // of doing so and getting the Status response at the same
+                // time.  It's a little wasteful if we end up not sending the
+                // status, if not all the write bytes have been received yet,
+                // but we don't care because that's an edge case.
+                let status = Self::get_status_from_transfer(&guard);
 
-                    // Create the status to respond with
-                    let status = match response {
-                        UsbTransferResponse::Ok => Status {
-                            code: StatusCode::Ok,
-                            value: guard.expected_bytes() as u16,
-                        },
-                        UsbTransferResponse::Error => Status {
-                            code: StatusCode::Error,
-                            value: 0,
-                        },
-                        UsbTransferResponse::None => Status {
-                            code: StatusCode::Error,
-                            value: 0,
-                        },
-                    };
+                if let Some(status) = status {
+                    // Check to see if there's more bytes to be received
+                    // This happens if the device hits an error before
+                    // writing all of the bytes.  In which case, we need to
+                    // receive the rest of the bytes before we can clear the
+                    // transfer.
+                    if guard.remaining_bytes() > 0 {
+                        // We have more bytes to receive - do nothing
+                        return;
+                    }
+
+                    // It is done
+                    debug!("OUT transfer complete ({})", status.code);
 
                     // Send the response
                     let result = self.write_ep.write(&status.to_bytes()).await;
@@ -544,11 +569,14 @@ impl ProtocolHandler {
 
                 // An IN/read transfer - first see if there's bytes to send
                 let outstanding_bytes = guard.outstanding_bytes();
+                const_assert!(MAX_EP_PACKET_SIZE_USIZE < TRANSFER_DATA_BUFFER_SIZE);
                 if outstanding_bytes > MAX_EP_PACKET_SIZE_USIZE
                     || response != UsbTransferResponse::None
                 {
                     // We either have a full 64 bytes to send, or we're done
-                    // so need to send anyway.
+                    // so need to send anyway.  We only send a max of 64 bytes
+                    // from this function at a time.  We will be rescheduled
+                    // to send more, if they are outstanding, soon enough.
 
                     // Use a temporary buffer to get the bytes to send into.
                     let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
@@ -575,12 +603,13 @@ impl ProtocolHandler {
                     }
                 }
 
-                // Now see if it's done
+                // Now see if the IN/read transfer is done
                 if response != UsbTransferResponse::None {
                     // It's done - see how it went
                     debug!("IN transfer complete ({})", response);
 
-                    // Do not send a response
+                    // Do not send a response in the IN/read case, as one is
+                    // not supported by the protocol.
 
                     // Clear the transfer
                     guard.clear();
@@ -655,7 +684,7 @@ pub async fn protocol_handler_task() -> ! {
         // Handle the in progress transfer if it needs actioning
         protocol_handler.handle_transfer().await;
 
-        // Handle any data read in by the USB driver.
+        // Handle any data read by the USB driver and passed to us.
         protocol_handler.handle_out_data().await;
 
         // Pause to allow other tasks to run

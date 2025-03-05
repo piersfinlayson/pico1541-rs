@@ -88,6 +88,9 @@ bitflags = "2.8"
 # Exposes reset_usb_boot() RP2040 bootrom function (for reboot to DFU mode)
 rp2040-rom = "0.1.1"
 
+# Provides static asserts
+static_assertions = "1.1"
+
 [build-dependencies]
 # Required for required build.rs support
 built = { version = "0.7", features = ["git2", "chrono"] }

@@ -183,39 +183,77 @@ impl Driver {
     }
 }
 
-/// Important - DRIVER will be locked for the timetime of this task.
+/// Task to perform a raw_write() operation, using the active driver.
+///
+/// Important - DRIVER will be locked for the timetime of this task.  If
+/// the driver is not set, this task will immediately exits, setting error.
+///
+/// We deliberately set the response type in this function, as the task exits
+/// so that the spawner can be sure, once response is set, that this task is
+/// done, and hence the driver is unlocked.
 #[embassy_executor::task]
 pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFlags) {
     debug!("Starting raw_write_task");
 
-    let mut driver = DRIVER.lock().await;
-    let driver = driver.as_mut().unwrap();
+    let response = {
+        let mut guard = DRIVER.lock().await;
+        let guard = guard.as_mut();
 
-    // Call raw_write and set the response appropriately.
-    let response = driver
-        .raw_write(len, protocol, flags)
-        .await
-        .map(|_| UsbTransferResponse::Ok)
-        .unwrap_or(UsbTransferResponse::Error);
+        match guard {
+            Some(guard) => {
+                // Call raw_write and set the response appropriately.
+                guard
+                    .raw_write(len, protocol, flags)
+                    .await
+                    .map(|_| UsbTransferResponse::Ok)
+                    .unwrap_or(UsbTransferResponse::Error)
+            }
+            None => {
+                warn!("No driver set for raw_write_task");
+                UsbTransferResponse::Error
+            }
+        }
+    };
+    // Driver is unlocked here.
+
     UsbDataTransfer::lock_set_response(response).await;
 
     debug!("Finished raw_write_task");
 }
 
-/// Important - DRIVER will be locked for the timetime of this task.
+/// Task to perform a raw_read() operation, using the active driver.
+///
+/// Important - DRIVER will be locked for the timetime of this task.  If
+/// the driver is not set, this task will immediately exits, setting error.
+///
+/// We deliberately set the response type in this function, as the task exits
+/// so that the spawner can be sure, once response is set, that this task is
+/// done, and hence the driver is unlocked.
 #[embassy_executor::task]
 pub async fn raw_read_task(len: u16) {
     debug!("Starting raw_read_task");
 
-    let mut driver = DRIVER.lock().await;
-    let driver = driver.as_mut().unwrap();
+    let response = {
+        let mut guard = DRIVER.lock().await;
+        let guard = guard.as_mut();
 
-    // Call raw_read and set the response appropriately.
-    let response = driver
-        .raw_read(len)
-        .await
-        .map(|_| UsbTransferResponse::Ok)
-        .unwrap_or(UsbTransferResponse::Error);
+        match guard {
+            Some(guard) => {
+                // Call raw_read and set the response appropriately.
+                guard
+                    .raw_read(len)
+                    .await
+                    .map(|_| UsbTransferResponse::Ok)
+                    .unwrap_or(UsbTransferResponse::Error)
+            }
+            None => {
+                warn!("No driver set for raw_read_task");
+                UsbTransferResponse::Error
+            }
+        }
+    };
+    // Driver is unlocked here.
+
     UsbDataTransfer::lock_set_response(response).await;
 
     debug!("Finished raw_read_task");
