@@ -6,10 +6,10 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+use bitflags::bitflags;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-
-use bitflags::bitflags;
+use embassy_executor::Spawner;
 use embassy_rp::gpio::Flex;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
@@ -18,36 +18,30 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointIn;
-use heapless::Vec;
 
 use crate::constants::{
-    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_GPIO_PINS, MAX_READ_SIZE, MAX_WRITE_SIZE, PROTOCOL_LOOP_TIMER, 
-    MAX_WRITE_SIZE_USIZE, PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE,
+    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_GPIO_PINS, MAX_WRITE_SIZE_USIZE,
+    PROTOCOL_LOOP_TIMER, PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE,
+    USB_DATA_TRANSFER_WAIT_TIMER,
 };
+use crate::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
 use crate::display::{update_status, DisplayType};
-use crate::driver::{Driver, DriverError, ProtocolDriver};
+use crate::driver::{raw_read_task, raw_write_task, Driver, ProtocolDriver, DRIVER};
 use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
 use crate::iec::{IecBus, IecDriver, Line};
+use crate::types::Direction;
 use crate::usb::WRITE_EP;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
-// The PROTOCOL_ACTION static is a Signal that is used to communicate to the
-// Protocol Handler that a protocol state change is requrested.  We use a
-// CriticalSectionRawMutex Signal because the Protocol Handler and Control
-// Handler (which sends signals) run on different cores.
-pub static PROTOCOL_ACTION: Signal<CriticalSectionRawMutex, ProtocolAction> = Signal::new();
-
-// We need a static for the write data we may be asked to read in.  The
-// maximum size of a data transfer supported by the xum1541 is 32768 bytes,
-// which is the MAX_WRITE_SIZE_USIZE.  So, we can't possibly allocate this on
-// the stack, or even on the heap, so we have a static, which should be OK as
-// the Pico has 264KB RAM.  However, we need to be careful about accessing
-// this.
 //
-// TODO - should probably move to using much, much smaller buffers and then
-// it's up to the Protocol handling code to read it out of the buffer in a
-// timely enough fashion.
-static mut WRITE_DATA: Vec<u8, MAX_WRITE_SIZE_USIZE> = Vec::new();
+// Statics
+//
+
+/// The PROTOCOL_ACTION static is a Signal that is used to communicate to the
+/// Protocol Handler that a protocol state change is requrested.  We use a
+/// CriticalSectionRawMutex Signal because the Protocol Handler and Control
+/// Handler (which sends signals) run on different cores.
+pub static PROTOCOL_ACTION: Signal<CriticalSectionRawMutex, ProtocolAction> = Signal::new();
 
 // A channel for Bulk to send read data from the OUT endpoint into, and then
 // send it to the ProtocolHandler.
@@ -99,136 +93,6 @@ impl defmt::Format for ProtocolAction {
     }
 }
 
-// A Transfer operation.  This is a read or write of data using a Bulk
-// transfer and is triggerd by a Bulk command from the Host on the OUT
-// endoint.  Writes also take take on the OUT endpoint (as they are host to
-// device).  Reads are sent on the IN endpoint (as they are device to host).
-#[allow(clippy::large_enum_variant)]
-enum Transfer {
-    #[allow(dead_code)]
-    Read(Read),
-    Write(Write),
-}
-
-// A Write operation.  This is created when a WRITE command is received via
-// the bulk OUT endpoint, used to manage the reception of the data to be
-// written, and create the Status to be returned after data reception.
-struct Write {
-    // Number of bytes of data we are expecting the host to write to us,
-    // (and we will not process any other protocol commands until that comes
-    // in).
-    expected_len: u16,
-
-    // Number of bytes of write data we've received so far, and are stored
-    // in data.
-    received_bytes: u16,
-
-    // Protocol to use.
-    protocol: ProtocolType,
-
-    // Protocol flags.
-    flags: ProtocolFlags,
-
-    // A buffer to hold all of the data to be written.  As we are running on
-    // an embedded device, and we are no_std, we are using heapless::Vec.
-    // So long as Write is within Transfer, which is within ProtocolHandler,
-    // which is within Bulk, and so long as Bulk is in a StaticCell, then
-    // this Vec is allocated statically.
-    data: &'static mut Vec<u8, MAX_WRITE_SIZE_USIZE>,
-}
-
-impl Write {
-    // Create a new Write transfer, with a buffer large enough to store all
-    // possible incoming data.
-    fn new(command: Command) -> Result<Self, Status> {
-        if command.len < MAX_WRITE_SIZE {
-            // This should be safe, as Bulk and Protocol are the only objects
-            // that access data, and they run within a single thread, on core
-            // 1.  Nothing else can access it.  The only functionality that
-            // operates in parallel, on core 1, is an attempt to read data
-            // from USB into a separate buffer.
-            unsafe {
-                #[allow(static_mut_refs)]
-                Ok(Self {
-                    expected_len: command.len,
-                    received_bytes: 0,
-                    protocol: command.protocol,
-                    flags: command.flags,
-                    data: &mut WRITE_DATA,
-                })
-            }
-        } else {
-            info!("Received WRITE command for too many bytes: {}", command.len);
-            Err(Status {
-                code: StatusCode::Error,
-                value: command.len,
-            })
-        }
-    }
-
-    // Called when data has been received from the OUT endpoint for this
-    // transfer.  Stores the data in the buffer.
-    fn receive_data(&mut self, data: &[u8], len: u16) -> Result<(), ()> {
-        if self.received_bytes + len > self.expected_len {
-            return Err(());
-        }
-
-        // We know this can't fail as expected_len <= MAX_WRITE_SIZE
-        let _ = self.data.extend_from_slice(&data[..(len as usize)]);
-        self.received_bytes += len;
-        Ok(())
-    }
-
-    // Called to find out if the WRITE operation has completed yet.  If so a
-    // Some(Status) is returned, which can then be used to construct and send
-    // a status response.
-    fn complete(&self) -> Option<Status> {
-        if self.received_bytes >= self.expected_len {
-            Some(Status {
-                code: StatusCode::Ok,
-                value: self.received_bytes,
-            })
-        } else {
-            None
-        }
-    }
-}
-
-// A Read operation.  This is created when a READ command is received via
-// the bulk OUT endpoint, used to manage the sending of the data to the IN
-// endpoint.
-pub struct Read {
-    // Number of bytes the host is expecting us to send.  The transfer is not
-    // complete until we have sent this number of bytes (or the device is
-    // reset, uninitialized, or initialized.
-    pub len: u16,
-
-    // Protocol to use
-    protocol: ProtocolType,
-}
-
-impl Read {
-    // Create a new Read transfer.  As this example implementation sends dummy
-    // data we refill the buffer with all 'x's.  In a real implementation this
-    // would need to be enhanced.
-    fn new(command: Command) -> Result<Self, ()> {
-        if command.len > MAX_READ_SIZE {
-            info!("Received READ command for too many bytes: {}", command.len);
-            return Err(());
-        }
-
-        if command.flags.is_any() {
-            info!("Unsupported flags on read: {:?}", command.flags);
-            return Err(());
-        }
-
-        Ok(Self {
-            len: command.len,
-            protocol: command.protocol,
-        })
-    }
-}
-
 /// ProtocolHandler handles requests that come in via bulk transfers on the
 /// OUT endpoint.
 ///
@@ -241,14 +105,6 @@ pub struct ProtocolHandler {
 
     // The IN endpoint to use to send status responses and READ data.
     write_ep: Endpoint<'static, USB, In>,
-
-    // The current transfer operation.  This is either a Read or Write
-    // operation, and is set when a new command is received, and cleared when
-    // the operation is complete, or `Self::state` is changed.
-    transfer: Option<Transfer>,
-
-    // The IEC Driver.
-    driver: Option<Driver>,
 
     // Core we are running on
     core: u32,
@@ -276,8 +132,6 @@ impl ProtocolHandler {
         Self {
             state: ProtocolState::Uninitialized,
             write_ep,
-            transfer: None,
-            driver: None,
             core,
             iec_pins,
             ieee_pins,
@@ -379,8 +233,11 @@ impl ProtocolHandler {
 
     // Initialize the correct driver type.
     async fn init_driver(&mut self) {
+        let mut guard = DRIVER.lock().await;
+        let mut guard = guard.as_mut();
+
         // If we have a driver already we need to remove the pins and drop it.
-        if let Some(driver) = self.driver.take().as_mut() {
+        if let Some(driver) = guard.take() {
             self.retrieve_driver_pins(driver);
         }
         // Existing driver gets dropped here
@@ -389,7 +246,7 @@ impl ProtocolHandler {
         // TODO
 
         // Create the appropriate driver
-        self.driver = Some(self.create_iec_driver());
+        guard.replace(&mut self.create_iec_driver());
     }
 
     // Called from the main runner to perform an action.  This is called every
@@ -412,10 +269,10 @@ impl ProtocolHandler {
         // If there is one, perform it.
         match action {
             // We can initialize the ProtocolHandler when it's in any state.
-            ProtocolAction::Initialize => self.initialize(),
+            ProtocolAction::Initialize => self.initialize().await,
 
             // We can unintialize the ProtocolHandler when it's in any state.
-            ProtocolAction::Uninitialize => self.uninitialize(),
+            ProtocolAction::Uninitialize => self.uninitialize().await,
 
             // We can only reset the ProtocolHandler when it's initialized.
             ProtocolAction::Reset => {
@@ -453,47 +310,35 @@ impl ProtocolHandler {
     pub async fn received_data(&mut self, data: &[u8], len: u16) {
         // Check we have a driver.  If not, create one.  This makes it safe to
         // unwrap() self.driver later in this function and sub-functions.
-        if self.driver.is_none() {
+        // We have to try this because it is possible there is a transfer
+        // outstanding and the driver is locked because of that.)
+        if let Ok(true) = Driver::try_is_none() {
             self.init_driver().await;
         }
 
-        // Take the transfer out here, so we don't borrow self mutably in
-        // the match.  We have to put it back again, if it was Some(Transfer)
-        // and it hasn't been dropped, but we will let the match arm function
-        // handle that.
-        let transfer = self.transfer.take();
-        match transfer {
+        // Find out whether we have a transfer underway
+        let (xfer_active, xfer_direction) = UsbDataTransfer::lock_is_active_and_direction().await;
+
+        // Now handle the data based on the transfer state.
+        match (xfer_active, xfer_direction) {
             // No transfer is underway - this is the start of a new command.
-            None => {
-                // Parse and handle the new command.
-                self.handle_new_command(data, len).await;
-            }
+            (false, _) => self.handle_new_command(data, len).await,
 
-            // A WRITE transfer is underway - handle the incoming data.
-            Some(Transfer::Write(write)) => {
-                // Put the transfer back in self before calling the function
-                // to handle the write data, so the function can access it
-                // mutably.
-                self.transfer = Some(Transfer::Write(write));
-                self.handle_write_data(data, len).await;
-            }
+            // An Out (write) transfer is underway - handle the incoming data.
+            (true, Direction::Out) => self.handle_write_data(data, len).await,
 
-            // A READ transfer is underway - ignore the incoming data because
-            // only a WRITE or READ can be underway at once.  Because we're
-            // here a READ is outstanding, and hence we should be sending data
-            // out, not receiving it.
-            Some(Transfer::Read(_)) => {
-                // We're just ignoring it when we receive (WRITE) data during
-                // a READ transfer, and we consider the READ transfer ongoing.
-                // Hence we put tranfer back in self.
-                info!("Received data during READ - ignoring");
-                self.transfer = transfer;
+            // An In (read) transfer is underway - ignore the incoming data
+            // because only a WRITE or READ can be underway at once.  Because
+            // we're here a read is underway, and hence we should be sending
+            // data out, not receiving it.
+            (true, Direction::In) => {
+                warn!("Received data during READ - ignoring");
             }
         }
     }
 
     // Handles a new command, by creating the appropriate transfer and, in
-    // the case of a WRITE command, sending a response if it fails
+    // the case of an OUT/write command, sending a response if it fails
     async fn handle_new_command(&mut self, data: &[u8], len: u16) {
         update_status(DisplayType::Active);
 
@@ -509,29 +354,18 @@ impl ProtocolHandler {
         };
 
         if !command.protocol.supported() {
-            info!("Unsupported protocol: {:?}", command.protocol);
+            warn!("Unsupported protocol: {:?}", command.protocol);
             match command.command {
                 CommandType::Read => {
                     // Drop the request as we aren't allow to send a status
                 }
                 CommandType::Write => {
-                    // Try to send an error - although we can't be explicit
-                    // about what error we hit as the protocol doesn't allow
-                    // it
-                    match self
-                        .write_ep
-                        .write(
-                            &Status {
-                                code: StatusCode::Error,
-                                value: command.len,
-                            }
-                            .to_bytes(),
-                        )
-                        .await
-                    {
-                        Ok(_) => info!("Failed to handle WRITE - sent error response"),
-                        Err(_) => info!("Failed to send WRITE error response"),
-                    }
+                    // Try to send an error
+                    self.send_status(Status {
+                        code: StatusCode::Error,
+                        value: command.len,
+                    })
+                    .await;
                 }
                 _ => {
                     // The rest are unsupported - just drop
@@ -542,154 +376,93 @@ impl ProtocolHandler {
         }
 
         match command.command {
-            // Create a new Write transfer.  If the creation fails, we will
-            // attempt to send a status response.
+            // Create a new OUT/write transfer.
             CommandType::Write => {
                 info!("Host to WRITE {} bytes", command.len);
-                match Write::new(command) {
-                    Ok(write) => self.transfer = Some(Transfer::Write(write)),
-                    Err(status) => {
-                        update_status(DisplayType::Error);
-                        match self.write_ep.write(&status.to_bytes()).await {
-                            Ok(_) => info!("Failed to handle WRITE - sent error response"),
-                            Err(_) => info!("Failed to send WRITE error response"),
-                        }
-                    }
+
+                // TODO Should check command.len < 32KB and send error resonse
+                // but that would make this code more complex, and we don't
+                // actually care if the len is longer than that.
+
+                UsbDataTransfer::lock_init(Direction::Out, command.len).await;
+
+                // Spawn the transfer
+                let spawner = Spawner::for_current_executor().await;
+                let result =
+                    spawner.spawn(raw_write_task(command.len, command.protocol, command.flags));
+
+                if let Err(e) = result {
+                    // Failed to spawn the raw_write task - clear down
+                    warn!("Failed to spawn raw_write task {}", e);
+                    UsbDataTransfer::lock_clear().await;
+                    self.send_status(Status {
+                        code: StatusCode::Error,
+                        value: 0,
+                    })
+                    .await;
                 }
             }
-            // Create a new Read transfer.  If the creation fails, we silently
-            // drop the request, as Read commands do no support a status
-            // response.
+
+            // Create a new IN/read transfer.
             CommandType::Read => {
                 info!("Host to READ {} bytes", command.len);
-                match Read::new(command) {
-                    Ok(read) => {
-                        let proto = read.protocol.clone();
-                        let len = read.len;
-                        self.transfer = Some(Transfer::Read(read));
 
-                        let result = match proto {
-                            ProtocolType::Cbm => {
-                                self.driver
-                                    .as_mut()
-                                    .unwrap()
-                                    .raw_read(len, &mut self.write_ep)
-                                    .await
-                            }
-                            _ => {
-                                error!("Unsupported read protocol: {:?}", proto);
-                                update_status(DisplayType::Error);
-                                Err(DriverError::Unsupported)
-                            }
-                        };
+                // TODO again, strictly we should check len < 32KB
 
-                        match result {
-                            Ok(_) => info!("Sent READ response"),
-                            Err(_) => {
-                                info!("Failed to send READ response");
-                                update_status(DisplayType::Error);
-                            }
-                        }
+                UsbDataTransfer::lock_init(Direction::In, command.len).await;
 
-                        self.transfer = None;
-                    }
-                    Err(_) => {
-                        info!("Failed to handle READ - drop it");
-                        update_status(DisplayType::Error);
-                    }
+                // Spawn the transfer
+                let spawner = Spawner::for_current_executor().await;
+                let result = spawner.spawn(raw_read_task(command.len));
+
+                if let Err(e) = result {
+                    // Failed to spawn the raw_read task - clear down.  Not
+                    // allowed to send a response.
+                    warn!("Failed to spawn raw_read task {}", e);
+                    UsbDataTransfer::lock_clear().await;
                 }
             }
+
             // The rest are unsupported - just drop
-            _ => (),
+            _ => {
+                warn!("Unsupported command: {}", command.command);
+            }
         }
     }
 
     // Handles receipt of a chunk of data from the host for a WRITE transfer.
-    // This function demands that self.transfer is of type Transfer::Write.
     async fn handle_write_data(&mut self, data: &[u8], len: u16) {
-        let transfer = self
-            .transfer
-            .as_mut()
-            .expect("Internal error - expected WRITE transfer");
-        let write = match transfer {
-            Transfer::Write(write) => write,
-            _ => unreachable!(),
-        };
+        let mut written: usize = 0;
+        loop {
+            let result = UsbDataTransfer::lock_try_add_bytes(&data[..len as usize]).await;
 
-        // Handle the incoming data using the Transfer object.
-        match write.receive_data(data, len) {
-            Ok(_) => {
-                if let Some(status) = write.complete() {
-                    // Write complete
-                    info!("WRITE complete");
-
-                    // Execute the write using the correct protocol
-                    let result = match write.protocol {
-                        ProtocolType::Cbm => {
-                            self.driver
-                                .as_mut()
-                                .unwrap()
-                                .raw_write(write.data, write.flags)
-                                .await
-                        }
-                        _ => {
-                            error!("Unsupported protocol: {}", write.protocol);
-                            update_status(DisplayType::Error);
-                            Err(DriverError::Unsupported)
-                        }
-                    };
-
-                    // Set up the correct status response
-                    let status = match result {
-                        Ok(bytes) => {
-                            debug!("Sent WRITE response: {} bytes", bytes);
-                            status
-                        }
-                        Err(e) => {
-                            info!("Failed to handle WRITE {}", e);
-                            update_status(DisplayType::Error);
-                            Status {
-                                code: StatusCode::Error,
-                                value: 0,
-                            }
-                        }
-                    };
-
-                    // Send the status response.
-                    match self.write_ep.write(&status.to_bytes()).await {
-                        Ok(_) => info!("Sent WRITE response"),
-                        Err(e) => error!("Failed to send WRITE response {}", e),
-                    }
-
-                    self.transfer = None
-                } else {
-                    // Incomplete - leave transfer in place.
-                }
+            if let Ok(size) = result {
+                written += size;
             }
-            Err(_) => {
-                // The only error from write.receive() is if too much data
-                // was received.
-                info!("Too much data received - dropping WRITE");
-                self.transfer = None;
+
+            if written >= (len as usize) {
+                break;
+            } else {
+                Timer::after(USB_DATA_TRANSFER_WAIT_TIMER).await;
             }
         }
     }
 
     // (Re-)Initialize the ProtocolHandler.  Any oustanding transfer is
     // cleared.
-    fn initialize(&mut self) {
+    async fn initialize(&mut self) {
         info!("Protocol Handler - initialized");
         self.state = ProtocolState::Initialized;
         update_status(DisplayType::Ready);
-        self.transfer = None
+        UsbDataTransfer::lock_clear().await;
     }
 
     // Uninitialize the ProtocolHandler.  Any outstanding transfer is cleared.
-    fn uninitialize(&mut self) {
+    async fn uninitialize(&mut self) {
         info!("Protocol Handler - uninitialized");
         self.state = ProtocolState::Uninitialized;
         update_status(DisplayType::Init);
-        self.transfer = None
+        UsbDataTransfer::lock_clear().await;
     }
 
     // Reset the ProtocolHandler.  Any outstanding transfer is cleared.
@@ -697,26 +470,126 @@ impl ProtocolHandler {
         info!("Protocol Handler - reset");
 
         // Initialize the driver if not already initialized
-        let driver = self.driver.as_mut();
-        if driver.is_none() {
-            self.init_driver().await;
+        let mut guard = DRIVER.lock().await;
+        if guard.is_none() {
+            guard.replace(self.create_iec_driver());
         }
 
         // Reset the bus
-        if let Err(e) = self.driver.as_mut().unwrap().reset(false).await {
+        if let Err(e) = guard.as_mut().unwrap().reset(false).await {
             info!("Hit error reseting the bus {}", e);
         }
 
         // Clear out any existing transfers
-        self.transfer = None
+        UsbDataTransfer::lock_clear().await;
+    }
+
+    // See if we have an in-progress transfer, and if so, see if it needs any
+    // actioning.
+    //
+    // Either:
+    // - There is no outstanding transfer, in which case we do nothing.
+    // - There is an outstanding transfer but it's complete, in which case,
+    //   in the OUT case we send a Status back to the host, and in both cases
+    //   clear down the transfer
+    // - There is an outstanding, incomplete IN transfer, in which case we see
+    //   if we need to send any data
+    async fn handle_transfer(&mut self) {
+        // Lock the data transfer for this function
+        let mut guard = USB_DATA_TRANSFER.lock().await;
+
+        if !guard.is_active() {
+            return;
+        }
+
+        match guard.direction() {
+            Direction::Out => {
+                // An OUT/write transfer - see if it's done
+                let response = guard.get_response();
+                if response != UsbTransferResponse::None {
+                    // It is done
+                    debug!("OUT transfer complete ({})", response);
+
+                    // Create the status to respond with
+                    let status = match response {
+                        UsbTransferResponse::Ok => Status {
+                            code: StatusCode::Ok,
+                            value: guard.expected_bytes() as u16,
+                        },
+                        UsbTransferResponse::Error => Status {
+                            code: StatusCode::Error,
+                            value: 0,
+                        },
+                        UsbTransferResponse::None => Status {
+                            code: StatusCode::Error,
+                            value: 0,
+                        },
+                    };
+
+                    // Send the response
+                    let result = self.write_ep.write(&status.to_bytes()).await;
+                    if let Err(e) = result {
+                        warn!("Failed to send status {}", e);
+                    }
+
+                    // Clear the transfer
+                    guard.clear();
+                }
+            }
+            Direction::In => {
+                // Get the transfer status - we'll use in both steps below
+                let response = guard.get_response();
+
+                // An IN/read transfer - first see if there's bytes to send
+                let outstanding_bytes = guard.outstanding_bytes();
+                if outstanding_bytes > MAX_EP_PACKET_SIZE_USIZE
+                    || response != UsbTransferResponse::None
+                {
+                    // We either have a full 64 bytes to send, or we're done
+                    // so need to send anyway.
+
+                    // Use a temporary buffer to get the bytes to send into.
+                    let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
+
+                    // Figure out how many bytes to get
+                    let bytes_to_send = if response == UsbTransferResponse::None {
+                        MAX_EP_PACKET_SIZE_USIZE
+                    } else {
+                        outstanding_bytes
+                    };
+
+                    // Get the bytes
+                    let result = guard.try_get_next_bytes(&mut buffer[..bytes_to_send]);
+
+                    match result {
+                        Some(size) => {
+                            // Send the bytes
+                            let result = self.write_ep.write(&buffer[..size]).await;
+                            if let Err(e) = result {
+                                warn!("Failed to send IN data {}", e);
+                            }
+                        }
+                        None => warn!("Failed to send IN data - no bytes provided"),
+                    }
+                }
+
+                // Now see if it's done
+                if response != UsbTransferResponse::None {
+                    // It's done - see how it went
+                    debug!("IN transfer complete ({})", response);
+
+                    // Do not send a response
+
+                    // Clear the transfer
+                    guard.clear();
+                }
+            }
+        }
     }
 
     // See if there's any data in WRITE_DATA_CHANNEL from Bulk for us to
     // process.
-    // TO DO - don't just read all written data into a massive WRITE buffer.
-    // Instead keep it close by ready to feed to IecDriver when it asks for
-    // it.
-    async fn handle_data(&mut self) {
+    async fn handle_out_data(&mut self) {
         // See if there's any data on Channel
         match WRITE_DATA_CHANNEL.try_receive() {
             Ok((size, data)) => {
@@ -734,6 +607,12 @@ impl ProtocolHandler {
             Err(_) => {
                 // No data
             }
+        }
+    }
+
+    async fn send_status(&mut self, status: Status) {
+        if let Err(e) = self.write_ep.write(&status.to_bytes()).await {
+            warn!("Failed to send status {}", e);
         }
     }
 }
@@ -771,8 +650,11 @@ pub async fn protocol_handler_task() -> ! {
         // Perform any actions that are waiting.
         protocol_handler.perform_action().await;
 
+        // Handle the in progress transfer if it needs actioning
+        protocol_handler.handle_transfer().await;
+
         // Handle any data read in by the USB driver.
-        protocol_handler.handle_data().await;
+        protocol_handler.handle_out_data().await;
 
         // Pause to allow other tasks to run
         Timer::after(PROTOCOL_LOOP_TIMER).await;
@@ -846,6 +728,34 @@ impl CommandType {
     #[allow(dead_code)]
     fn is_async(&self) -> bool {
         matches!(self, Self::IecWait)
+    }
+}
+
+impl defmt::Format for CommandType {
+    fn format(&self, fmt: defmt::Formatter) {
+        match self {
+            CommandType::Read => defmt::write!(fmt, "Read"),
+            CommandType::Write => defmt::write!(fmt, "Write"),
+            CommandType::GetEoi => defmt::write!(fmt, "GetEoi"),
+            CommandType::ClearEoi => defmt::write!(fmt, "ClearEoi"),
+            CommandType::PpRead => defmt::write!(fmt, "PpRead"),
+            CommandType::PpWrite => defmt::write!(fmt, "PpWrite"),
+            CommandType::IecPoll => defmt::write!(fmt, "IecPoll"),
+            CommandType::IecWait => defmt::write!(fmt, "IecWait"),
+            CommandType::IecSetRelease => defmt::write!(fmt, "IecSetRelease"),
+            CommandType::ParburstRead => defmt::write!(fmt, "ParburstRead"),
+            CommandType::ParburstWrite => defmt::write!(fmt, "ParburstWrite"),
+            CommandType::SrqburstRead => defmt::write!(fmt, "SrqburstRead"),
+            CommandType::SrqburstWrite => defmt::write!(fmt, "SrqburstWrite"),
+            CommandType::TapMotorOn => defmt::write!(fmt, "TapMotorOn"),
+            CommandType::TapGetVer => defmt::write!(fmt, "TapGetVer"),
+            CommandType::TapPrepareCapture => defmt::write!(fmt, "TapPrepareCapture"),
+            CommandType::TapPrepareWrite => defmt::write!(fmt, "TapPrepareWrite"),
+            CommandType::TapGetSense => defmt::write!(fmt, "TapGetSense"),
+            CommandType::TapWaitForStopSense => defmt::write!(fmt, "TapWaitForStopSense"),
+            CommandType::TapWaitForPlaySense => defmt::write!(fmt, "TapWaitForPlaySense"),
+            CommandType::TapMotorOff => defmt::write!(fmt, "TapMotorOff"),
+        }
     }
 }
 
@@ -939,7 +849,7 @@ impl Command {
 /// Supported Bulk command protocols.
 #[repr(u8)]
 #[derive(Clone, defmt::Format, PartialEq)]
-enum ProtocolType {
+pub enum ProtocolType {
     Cbm = 0x10,
     S1 = 0x20,
     S2 = 0x30,

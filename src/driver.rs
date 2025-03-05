@@ -6,13 +6,19 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use embassy_rp::peripherals::USB;
-use embassy_rp::usb::{Endpoint, In};
+#[allow(unused_imports)]
+use defmt::{debug, error, info, trace, warn};
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::mutex::Mutex;
 
+use crate::transfer::{UsbDataTransfer, UsbTransferResponse};
 use crate::iec::IecDriver;
 use crate::ieee::IeeeDriver;
-use crate::protocol::ProtocolFlags;
+use crate::protocol::{ProtocolFlags, ProtocolType};
 use crate::tape::TapeDriver;
+
+// A static for the current driver in use.
+pub static DRIVER: Mutex<ThreadModeRawMutex, Option<Driver>> = Mutex::new(None);
 
 /// Defines errors for ProtocolDriver implementations.
 #[allow(dead_code)]
@@ -34,6 +40,8 @@ pub enum DriverError {
     Unsupported,
     /// Internal error
     Internal,
+    /// Try lock error
+    TryLock,
 }
 
 /// Defines the interface for Commodore protocol implementations.
@@ -51,12 +59,18 @@ pub trait ProtocolDriver {
     /// Write raw bytes to the bus with specified flags.
     ///
     /// # Arguments
-    /// * `data` - The bytes to write
+    /// * `len` - The number of bytes to write
+    /// * `protocol` - The protocol type
     /// * `flags` - Control flags affecting the write operation
     ///
     /// # Returns
     /// The number of bytes actually written or an error
-    async fn raw_write(&mut self, data: &[u8], flags: ProtocolFlags) -> Result<u16, DriverError>;
+    async fn raw_write(
+        &mut self,
+        len: u16,
+        protocol: ProtocolType,
+        flags: ProtocolFlags,
+    ) -> Result<u16, DriverError>;
 
     /// Read raw bytes from the bus.
     ///
@@ -66,11 +80,7 @@ pub trait ProtocolDriver {
     ///
     /// # Returns
     /// The number of bytes actually read or an error
-    async fn raw_read(
-        &mut self,
-        len: u16,
-        write_ep: &mut Endpoint<'static, USB, In>,
-    ) -> Result<u16, DriverError>;
+    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError>;
 
     /// Wait for a specific bus line to reach the desired state.
     ///
@@ -113,23 +123,24 @@ impl ProtocolDriver for Driver {
         }
     }
 
-    async fn raw_write(&mut self, data: &[u8], flags: ProtocolFlags) -> Result<u16, DriverError> {
+    async fn raw_write(
+        &mut self,
+        len: u16,
+        protocol: ProtocolType,
+        flags: ProtocolFlags,
+    ) -> Result<u16, DriverError> {
         match self {
-            Driver::Iec(driver) => driver.raw_write(data, flags).await,
-            Driver::Ieee(driver) => driver.raw_write(data, flags).await,
-            Driver::Tape(driver) => driver.raw_write(data, flags).await,
+            Driver::Iec(driver) => driver.raw_write(len, protocol, flags).await,
+            Driver::Ieee(driver) => driver.raw_write(len, protocol, flags).await,
+            Driver::Tape(driver) => driver.raw_write(len, protocol, flags).await,
         }
     }
 
-    async fn raw_read(
-        &mut self,
-        len: u16,
-        write_ep: &mut Endpoint<'static, USB, In>,
-    ) -> Result<u16, DriverError> {
+    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError> {
         match self {
-            Driver::Iec(driver) => driver.raw_read(len, write_ep).await,
-            Driver::Ieee(driver) => driver.raw_read(len, write_ep).await,
-            Driver::Tape(driver) => driver.raw_read(len, write_ep).await,
+            Driver::Iec(driver) => driver.raw_read(len).await,
+            Driver::Ieee(driver) => driver.raw_read(len).await,
+            Driver::Tape(driver) => driver.raw_read(len).await,
         }
     }
 
@@ -156,4 +167,56 @@ impl ProtocolDriver for Driver {
             Driver::Tape(driver) => driver.set_release(set, release).await,
         }
     }
+}
+
+#[allow(dead_code)]
+impl Driver {
+    pub async fn is_none() -> bool {
+        DRIVER.lock().await.is_none()
+    }
+
+    pub fn try_is_none() -> Result<bool, DriverError> {
+        DRIVER
+            .try_lock()
+            .map(|driver| driver.is_none())
+            .map_err(|_| DriverError::TryLock)
+    }
+}
+
+/// Important - DRIVER will be locked for the timetime of this task.
+#[embassy_executor::task]
+pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFlags) {
+    debug!("Starting raw_write_task");
+
+    let mut driver = DRIVER.lock().await;
+    let driver = driver.as_mut().unwrap();
+
+    // Call raw_write and set the response appropriately.
+    let response = driver
+        .raw_write(len, protocol, flags)
+        .await
+        .map(|_| UsbTransferResponse::Ok)
+        .unwrap_or(UsbTransferResponse::Error);
+    UsbDataTransfer::lock_set_response(response).await;
+
+    debug!("Finished raw_write_task");
+}
+
+/// Important - DRIVER will be locked for the timetime of this task.
+#[embassy_executor::task]
+pub async fn raw_read_task(len: u16) {
+    debug!("Starting raw_read_task");
+
+    let mut driver = DRIVER.lock().await;
+    let driver = driver.as_mut().unwrap();
+
+    // Call raw_read and set the response appropriately.
+    let response = driver
+        .raw_read(len)
+        .await
+        .map(|_| UsbTransferResponse::Ok)
+        .unwrap_or(UsbTransferResponse::Error);
+    UsbDataTransfer::lock_set_response(response).await;
+
+    debug!("Finished raw_read_task");
 }

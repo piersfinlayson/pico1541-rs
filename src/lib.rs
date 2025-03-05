@@ -25,6 +25,7 @@ mod built;
 mod bulk;
 mod constants;
 mod control;
+mod transfer;
 mod dev_info;
 mod display;
 mod driver;
@@ -41,7 +42,7 @@ mod watchdog;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
-use embassy_time::{Ticker, Delay};
+use embassy_time::{Delay, Ticker};
 use embedded_hal::delay::DelayNs;
 
 use constants::LOOP_LOG_INTERVAL;
@@ -212,7 +213,7 @@ pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     #[cfg(not(debug_assertions))]
     {
         let _ = info;
-    }   
+    }
 
     force_reboot()
 }
@@ -222,13 +223,12 @@ fn force_reboot() -> ! {
     // cortex_m::peripheral::SCB::sys_reset();
 
     // sys_reset() doesn't work on core 1 so use the watchdog - get it.
-    let mut watchdog = unsafe {
-        embassy_rp::watchdog::Watchdog::new(embassy_rp::peripherals::WATCHDOG::steal())
-    };
+    let mut watchdog =
+        unsafe { embassy_rp::watchdog::Watchdog::new(embassy_rp::peripherals::WATCHDOG::steal()) };
 
-    // Pause, or if there's a panic early on the probe may not be able to 
+    // Pause, or if there's a panic early on the probe may not be able to
     // connect to the device as it'll be restarting too quickly.
-    Delay.delay_us(1000000); // Pause or the probe 
+    Delay.delay_us(1000000); // Pause or the probe
 
     // Now reset
     watchdog.trigger_reset();

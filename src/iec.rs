@@ -9,16 +9,14 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Flex, Pull};
-use embassy_rp::peripherals::USB;
-use embassy_rp::usb::{Endpoint, In};
 use embassy_time::{with_timeout, Delay, Duration, Timer};
-use embassy_usb::driver::EndpointIn;
 use embedded_hal::delay::DelayNs;
 
-use crate::constants::MAX_EP_PACKET_SIZE;
+use crate::constants::{MAX_EP_PACKET_SIZE, USB_DATA_TRANSFER_WAIT_TIMER};
+use crate::transfer::UsbDataTransfer;
 use crate::display::{update_status, DisplayType};
 use crate::driver::{DriverError, ProtocolDriver};
-use crate::protocol::ProtocolFlags;
+use crate::protocol::{ProtocolFlags, ProtocolType};
 use crate::watchdog::{feed_watchdog, TaskId};
 
 //
@@ -447,11 +445,7 @@ impl ProtocolDriver for IecDriver {
     /// Read data from the IEC bus
     ///
     /// Timing is critical in this function, so we use delay_block_us.
-    async fn raw_read(
-        &mut self,
-        len: u16,
-        write_ep: &mut Endpoint<'static, USB, In>,
-    ) -> Result<u16, DriverError> {
+    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError> {
         info!("Raw Read: {} bytes requested", len);
 
         let mut buffer = [0u8; MAX_EP_PACKET_SIZE as usize];
@@ -522,7 +516,7 @@ impl ProtocolDriver for IecDriver {
             }
 
             if buf_count >= MAX_EP_PACKET_SIZE as usize {
-                Self::send_data_to_host(write_ep, &buffer, buf_count).await?;
+                Self::send_data_to_host(&buffer, buf_count).await?;
                 buf_count = 0;
             }
 
@@ -531,7 +525,7 @@ impl ProtocolDriver for IecDriver {
 
         if buf_count > 0 {
             // Send the remaining data to the host
-            Self::send_data_to_host(write_ep, &buffer, buf_count).await?;
+            Self::send_data_to_host(&buffer, buf_count).await?;
             // buf_count = 0; // unnecessary
         }
 
@@ -542,15 +536,19 @@ impl ProtocolDriver for IecDriver {
     /// Send data to the drive
     ///
     /// Timing is critical in this function, so we use delay_block_us.
-    async fn raw_write(&mut self, data: &[u8], flags: ProtocolFlags) -> Result<u16, DriverError> {
+    async fn raw_write(
+        &mut self,
+        len: u16,
+        _protocol: ProtocolType,
+        flags: ProtocolFlags,
+    ) -> Result<u16, DriverError> {
         let atn = flags.is_atn();
         let talk = flags.is_talk();
-        let len = data.len() as u16;
 
         info!("Raw Write: len {} bytes, atn {}, talk {}", len, atn, talk);
 
         if len == 0 {
-            return Ok(0);
+            return Ok(len);
         }
 
         // Prime the USB handling to be read to supply us data
@@ -594,8 +592,12 @@ impl ProtocolDriver for IecDriver {
 
         // Send bytes as soon as the device is ready
         let mut count = 0;
-        for (ii, &byte) in data.iter().enumerate() {
-            let is_last_byte = ii == data.len() - 1;
+        while count < len {
+            // Need to signal EOI for the last byte
+            let is_last_byte = count == len - 1;
+
+            // Get the next byte to send
+            let byte = UsbDataTransfer::lock_get_next_byte().await;
 
             // Be sure DATA line has been pulled by device
             if !self.bus.get_data() {
@@ -918,18 +920,25 @@ impl IecDriver {
         result
     }
 
-    async fn send_data_to_host(
-        write_ep: &mut Endpoint<'static, USB, In>,
-        buffer: &[u8],
-        buf_count: usize,
-    ) -> Result<(), DriverError> {
+    // Send data using the USB data transfer object. This queues it up for
+    // ProtocolHandler to send it.
+    async fn send_data_to_host(buffer: &[u8], buf_count: usize) -> Result<(), DriverError> {
         // Send the data to the host
-        match write_ep.write(&buffer[0..buf_count]).await {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                error!("Raw read: error writing to host {}", e);
-                Err(DriverError::Io)
+        let mut sent_bytes = 0;
+        loop {
+            let result = UsbDataTransfer::lock_try_add_bytes(&buffer[..buf_count]).await;
+
+            if let Ok(size) = result {
+                sent_bytes += size;
             }
+
+            if sent_bytes >= buf_count {
+                break;
+            }
+
+            Timer::after(USB_DATA_TRANSFER_WAIT_TIMER).await;
         }
+
+        Ok(())
     }
 }

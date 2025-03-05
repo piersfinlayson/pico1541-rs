@@ -49,6 +49,10 @@ pub const LOOP_LOG_INTERVAL: Duration = Duration::from_secs(5);
 /// How often the protocol handler task pauses so other tasks can run.
 pub const PROTOCOL_LOOP_TIMER: Duration = Duration::from_millis(1);
 
+/// How long to wait between checking whether a byte has become available in
+/// the USB data transfer object.
+pub const USB_DATA_TRANSFER_WAIT_TIMER: Duration = Duration::from_micros(1);
+
 //
 // USB device configuration constants.
 //
@@ -118,6 +122,7 @@ pub const MAX_WRITE_SIZE: u16 = 32768;
 pub const MAX_WRITE_SIZE_USIZE: usize = MAX_WRITE_SIZE as usize;
 
 /// Maximum size of a Read command
+#[allow(dead_code)]
 pub const MAX_READ_SIZE: u16 = 32768;
 
 /// Maximum size of xum1541 debug information strings

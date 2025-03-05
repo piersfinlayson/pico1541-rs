@@ -7,12 +7,12 @@
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver as RpUsbDriver, Endpoint, In, InterruptHandler, Out};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_usb::descriptor::{SynchronizationType, UsageType};
 use embassy_usb::driver::{Driver, Endpoint as DriverEndpoint, EndpointType};
 use embassy_usb::{Builder, Config, UsbDevice};
-use embassy_sync::mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use static_cell::{StaticCell, ConstStaticCell};
+use static_cell::{ConstStaticCell, StaticCell};
 
 use crate::constants::{
     MAX_EP_PACKET_SIZE, MAX_PACKET_SIZE_0, USB_CLASS, USB_POWER_MA, USB_PROTOCOL, USB_SUB_CLASS,
@@ -31,8 +31,7 @@ bind_interrupts!(struct Irqs {
 // the static later (in usb_task()) because it isn't Send safe.  So instead we
 // have to return a mutable reference to it (which StaticCell::init()
 // provides) and pass that into the usb_task().
-static USB_DEVICE: StaticCell<UsbDevice<'static, RpUsbDriver<'static, USB>>> =
-    StaticCell::new();
+static USB_DEVICE: StaticCell<UsbDevice<'static, RpUsbDriver<'static, USB>>> = StaticCell::new();
 
 // Statics for the read and write endpoints.  These are used to store the
 // endpoints so we can take them later when creating the Bulk and
@@ -66,7 +65,10 @@ impl UsbStack {
     /// - `USB` - The USB device
     /// - `READ_EP` - The read (Out) endpoint
     /// - `WRITE_EP` - The write (In) endpoint
-    pub async fn create_static(p_usb: USB, serial: &'static str) -> &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>> {
+    pub async fn create_static(
+        p_usb: USB,
+        serial: &'static str,
+    ) -> &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>> {
         // Create a new USB device
         let mut driver = RpUsbDriver::new(p_usb, Irqs);
 

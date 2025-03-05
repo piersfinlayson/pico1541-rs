@@ -18,6 +18,7 @@ pico1541w = [ "extended", "wifi" ]
 compatibility = []
 extended = []
 wifi = []
+std = [] # Used for tests
 
 [lib]
 name = "pico1541_rs"

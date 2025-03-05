@@ -7,11 +7,9 @@
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::peripherals::USB;
-use embassy_rp::usb::{Endpoint, In};
 
 use crate::driver::{DriverError, ProtocolDriver};
-use crate::protocol::ProtocolFlags;
+use crate::protocol::{ProtocolFlags, ProtocolType};
 
 pub struct IeeeDriver {}
 
@@ -21,15 +19,16 @@ impl ProtocolDriver for IeeeDriver {
         unimplemented!()
     }
 
-    async fn raw_write(&mut self, data: &[u8], flags: ProtocolFlags) -> Result<u16, DriverError> {
+    async fn raw_write(
+        &mut self,
+        len: u16,
+        _protocol: ProtocolType,
+        flags: ProtocolFlags,
+    ) -> Result<u16, DriverError> {
         unimplemented!()
     }
 
-    async fn raw_read(
-        &mut self,
-        len: u16,
-        write_ep: &mut Endpoint<'static, USB, In>,
-    ) -> Result<u16, DriverError> {
+    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError> {
         unimplemented!()
     }
 
