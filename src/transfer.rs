@@ -79,11 +79,14 @@ impl UsbDataTransfer {
 
     /// Initialize the transfer
     pub fn init(&mut self, direction: Direction, expected_bytes: u16) {
+        // TODO consider optimising out the clearing of the data buffer
         self.direction = Some(direction);
         self.expected_bytes = expected_bytes;
         self.received_bytes = 0;
+        self.data = [0; TRANSFER_DATA_BUFFER_SIZE];
         self.read_pos = 0;
         self.valid_bytes = 0;
+        self.response = UsbTransferResponse::None; 
     }
 
     /// Clear the transfer
@@ -302,6 +305,23 @@ impl UsbDataTransfer {
     pub async fn lock_outstanding() -> bool {
         let guard = USB_DATA_TRANSFER.lock().await;
         guard.outstanding()
+    }
+
+    /// Wait until there are outstanding bytes
+    pub async fn lock_wait_outstanding() {
+        loop {
+            // Lock the mutex
+            let guard = USB_DATA_TRANSFER.lock().await;
+
+            // Check if there are outstanding bytes
+            if guard.outstanding() {
+                break;
+            }
+
+            // Unlock the mutex and wait, briefly, to allow bytes to appear
+            drop(guard);
+            Timer::after(USB_DATA_TRANSFER_WAIT_TIMER).await;
+        }
     }
 
     /// Try to get the next byte from the buffer, but do not wait for one to

@@ -95,12 +95,12 @@ impl Bulk {
                         break;
                     }
                 }
-
-                // If we broke out of the read loop we need to update the
-                // device status
-                update_status(DisplayType::Init);
-                debug!("OUT Endpoint disabled");
             }
+
+            // If we broke out of the read loop we need to update the
+            // device status
+            update_status(DisplayType::Init);
+            debug!("OUT Endpoint disabled");
         }
     }
 }

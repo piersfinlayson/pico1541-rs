@@ -12,7 +12,7 @@ use embassy_rp::gpio::{Flex, Pull};
 use embassy_time::{with_timeout, Delay, Duration, Timer};
 use embedded_hal::delay::DelayNs;
 
-use crate::constants::{MAX_EP_PACKET_SIZE, USB_DATA_TRANSFER_WAIT_TIMER};
+use crate::constants::{MAX_EP_PACKET_SIZE, MAX_EP_PACKET_SIZE_USIZE, USB_DATA_TRANSFER_WAIT_TIMER};
 use crate::display::{update_status, DisplayType};
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::{ProtocolFlags, ProtocolType};
@@ -72,7 +72,7 @@ pub const STATUS_ERROR: u8 = 3;
 // Timer contants
 const BUS_FREE_CHECK_INTERVAL: Duration = Duration::from_millis(1);
 const BUS_FREE_TIMEOUT: Duration = Duration::from_millis(1500);
-const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(10);
+const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(1);
 const WAIT_INTERVAL: Duration = Duration::from_micros(1);
 
 // Timer macros, used for simple inlines.
@@ -113,7 +113,7 @@ macro_rules! delay_yield_us {
 }
 macro_rules! delay_yield_ms {
     ($ms:expr) => {
-        Timer::after_micros($ms).await
+        Timer::after_millis($ms).await
     };
 }
 macro_rules! delay_yield {
@@ -185,9 +185,10 @@ impl Line {
         self.output_pin.as_mut().unwrap().set_low();
     }
 
-    /// Read the current state of the line - not inverted pin
+    /// Read the current state of the line.  This returns true is the line
+    /// is active - as it is not inverted, this means true if low.
     pub fn get(&self) -> bool {
-        self.input_pin.as_ref().unwrap().is_high()
+        self.input_pin.as_ref().unwrap().is_low()
     }
 
     /// Check if line is currently being driven low - inverted pin so high
@@ -332,8 +333,8 @@ impl IecBus {
         }
     }
 
-    /// Poll all pins - returns a bit mask of active (low) lines.
-    /// This mimics the iec_poll_pins function in the original code
+    /// Poll all pins - returns a bit mask of _inactive_, i.e. high input
+    /// lines.  This mimics the iec_poll_pins function in the original code.
     pub fn poll_pins(&self) -> u8 {
         let mut result = 0;
         if !self.get_data() {
@@ -454,6 +455,12 @@ impl ProtocolDriver for IecDriver {
         let mut buf_count: usize = 0;
         self.eoi = false;
 
+        // Check we can send bytes before we get started, so we don't have to
+        // pause in the middle of a transfer.  We could just wait for one byte
+        // of space, but we'll wait for enough space for an entire USB packet
+        // as the buffer should be twice that size.
+        UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
+
         // Main read loop
         while count < len {
             let mut timeout = 0;
@@ -551,23 +558,25 @@ impl ProtocolDriver for IecDriver {
             return Ok(len);
         }
 
-        // Prime the USB handling to be read to supply us data
-        // TO DO - async read handling
-        // Right now we read the entire data in in one big chunk
-        // and then call this function.  However, that requires a massive
-        // static buffer, which isn't efficient and may be unsafe.  Hence we
-        // should move to a streaming model where we read in chunks from
-        // within this function.
+        // Wait until there's some bytes to send before we start so we don't
+        // have to pause in the middle of a transfer.
+        UsbDataTransfer::lock_wait_outstanding().await;
+        feed_watchdog(TaskId::ProtocolHandler);
 
-        // First, check if any device is present on the bus
-        if !self.wait_timeout_2ms(IO_ATN | IO_RESET, 0).await {
+        // Check if any device is present on the bus.  If both lines stay low
+        // then this check fails - and corresponds to a device present but
+        // powered off.  If we stayed, we'd get stuck in wait_for_listener().
+        if !self.wait_timeout_2ms(IO_ATN | IO_RESET, 0) {
             error!("Raw Write: No devices present on the bus");
             debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
             // TO DO - async read handling
             return Err(DriverError::NoDevices);
         }
 
-        self.bus.release_lines(IO_DATA);
+        // Let data go high.
+        self.bus.release_data();
+
+        // Either pull CLOCK low, or both ATN and CLOCK.
         match atn {
             true => self.bus.set_lines(IO_CLK | IO_ATN),
             false => self.bus.set_lines(IO_CLK),
@@ -576,13 +585,12 @@ impl ProtocolDriver for IecDriver {
         // Short delay to let lines settle
         iec_delay!();
 
-        // Wait for any device to pull data after we set CLK
-        // This should be IEC_T_AT (1ms) but allow a bit longer
-        if !self.wait_timeout_2ms(IO_DATA, IO_DATA).await {
+        // Wait for any device to pull data after we set CLK.
+        // This should be IEC_T_AT (1ms) but allow a bit longer.
+        if !self.wait_timeout_2ms(IO_DATA, IO_DATA) {
             error!("Raw Write: No devices detected");
-            debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
+            debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins() & IO_DATA);
             self.bus.release_lines(IO_CLK | IO_ATN);
-            // TO DO - async read handling
             return Err(DriverError::NoDevices);
         }
 
@@ -597,7 +605,9 @@ impl ProtocolDriver for IecDriver {
             let is_last_byte = count == len - 1;
 
             // Get the next byte to send
+            debug!("Lock get next byte");
             let byte = UsbDataTransfer::lock_get_next_byte().await;
+            debug!("Lock get next byte done");
 
             // Be sure DATA line has been pulled by device
             if !self.bus.get_data() {
@@ -605,20 +615,27 @@ impl ProtocolDriver for IecDriver {
                 return Err(DriverError::NoDevice);
             }
 
+            debug!("Data line low");
+
             // Release CLK and wait for listener to release data
             if !self.wait_for_listener().await {
                 error!("Raw write: No listener");
                 return Err(DriverError::Timeout);
             }
 
+            debug!("Listener released DATA");
+
             // Signal EOI for last byte
             if is_last_byte && !atn {
-                self.wait_timeout_2ms(IO_DATA, IO_DATA).await;
-                self.wait_timeout_2ms(IO_DATA, 0).await;
+                self.wait_timeout_2ms(IO_DATA, IO_DATA);
+                self.wait_timeout_2ms(IO_DATA, 0);
             }
+
+            // Pull CLOCK low
             self.bus.set_lines(IO_CLK);
 
             // Send the byte
+            debug!("send byte");
             if self.send_byte(byte).await {
                 count += 1;
                 delay_block_us!(IEC_T_BB);
@@ -630,6 +647,8 @@ impl ProtocolDriver for IecDriver {
 
             feed_watchdog(TaskId::ProtocolHandler);
         }
+
+        debug!("Sent data");
 
         // Talk-ATN turn around if requested
         if talk {
@@ -645,7 +664,7 @@ impl ProtocolDriver for IecDriver {
                                 //delay_block_us!(IEC_T_TK).await;
 
             // Release CLK and wait for device to grab it
-            self.bus.release_lines(IO_CLK);
+            self.bus.release_clock();
             iec_delay!();
 
             // Wait for device forever
@@ -653,7 +672,7 @@ impl ProtocolDriver for IecDriver {
                 return Ok(count);
             }
         } else {
-            self.bus.release_lines(IO_ATN);
+            self.bus.release_atn();
         }
 
         info!("Raw write: wrote {} bytes", count);
@@ -721,7 +740,10 @@ impl IecDriver {
     /// Timing is not critical here so use delay_yield.
     async fn wait_for_listener(&mut self) -> bool {
         // Release CLK to indicate we're ready to send
-        self.bus.release_lines(IO_CLK);
+        self.bus.release_clock();
+
+        // On Piers's 1541 it took around 270us for the listener to release
+        // data
 
         // Wait for device to release DATA
         while self.bus.get_data() {
@@ -748,11 +770,11 @@ impl IecDriver {
             // Set the bit value on the DATA line
             if (data & 1) == 0 {
                 self.bus.set_lines(IO_DATA);
-                delay_block_us!(2);
+                iec_delay!();
             }
 
             // Trigger clock edge and hold valid for specified time
-            self.bus.release_lines(IO_CLK);
+            self.bus.release_clock();
             delay_block_us!(IEC_T_V);
 
             // Prepare for next bit
@@ -761,7 +783,7 @@ impl IecDriver {
         }
 
         // Wait for acknowledgement
-        let ack = self.wait_timeout_2ms(IO_DATA, IO_DATA).await;
+        let ack = self.wait_timeout_2ms(IO_DATA, IO_DATA);
         if !ack {
             error!("send_byte: no ack");
         }
@@ -771,7 +793,7 @@ impl IecDriver {
     /// Receive a single byte from the IEC bus
     async fn receive_byte(&mut self) -> Result<u8, DriverError> {
         // Wait for CLK to be asserted (pulled low)
-        if !self.wait_timeout_2ms(IO_CLK, IO_CLK).await {
+        if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
             error!("Receive byte: no clock");
             return Err(DriverError::Timeout);
         }
@@ -781,7 +803,7 @@ impl IecDriver {
         // Read 8 bits
         for _bit in 0..8 {
             // Wait for CLK to be released (high)
-            if !self.wait_timeout_2ms(IO_CLK, 0).await {
+            if !self.wait_timeout_2ms(IO_CLK, 0) {
                 error!("Receive byte: clock not released");
                 return Err(DriverError::Timeout);
             }
@@ -793,7 +815,7 @@ impl IecDriver {
             }
 
             // Wait for CLK to be asserted again
-            if !self.wait_timeout_2ms(IO_CLK, IO_CLK).await {
+            if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
                 error!("Receive byte: no clock in loop");
                 return Err(DriverError::Timeout);
             }
@@ -803,10 +825,26 @@ impl IecDriver {
     }
 
     /// Wait up to 2ms for lines to reach specified state.
+    /// 
+    /// poll_pins() returns the mask if the pin is high (inactive).
+    /// 
+    /// If state is the mask being tested for (i.e. IO_DATA, IO_DATA), then
+    /// we wait until the line is low/active.
+    /// 
+    /// If the state is 0 (i.e. IO_DATA, 0), then we wait until the line is
+    /// high/inactive.
+    /// 
+    /// If mask is two lines (i.e IO_ATN | IO_RESET) and state is 0, then we
+    /// wait until at least one line is high/inactive.  If both lines remain
+    /// low/active in this case, we return false.
+    /// 
+    /// We return true if the line got to the state and false otherwise.
+    /// 
+    /// We wait for up to 2ms. 
     ///
     /// Timing is considered critical here to wait for around 2ms.  Hence we
     /// use delay_block_us.
-    async fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
+    fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
         for _ in 0..200 {
             if (self.bus.poll_pins() & mask) != state {
                 return true;
@@ -882,12 +920,12 @@ impl IecDriver {
 
         // If DATA is still unset, no drive answered
         if !self.bus.get_data() {
-            self.bus.release_lines(IO_ATN);
+            self.bus.release_atn();
             return false;
         }
 
         // Test releasing ATN
-        self.bus.release_lines(IO_ATN);
+        self.bus.release_atn();
         delay_block_us!(100);
 
         // Check if drive released DATA

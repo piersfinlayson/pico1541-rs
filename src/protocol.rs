@@ -174,6 +174,8 @@ impl ProtocolHandler {
     }
 
     fn create_iec_driver(&mut self) -> Driver {
+        debug!("Creating IEC driver");
+        
         // Create the lines
         let clock_line = Line::new(
             self.iec_pins.clock_in,
@@ -229,6 +231,33 @@ impl ProtocolHandler {
             Driver::Ieee(_) => unimplemented!("IEEE driver not implemented"),
             Driver::Tape(_) => unimplemented!("Tape driver not implemented"),
         }
+    }
+
+    fn try_init_driver(&mut self) -> Result<(), ()> {
+        let result = DRIVER.try_lock();
+
+        let mut guard = match result {
+            Ok(guard) => guard,
+            Err(e) => {
+                warn!("Failed to lock driver mutex {}", e);
+                return Err(());
+            }
+        }; 
+
+        // If we have a driver already we need to remove the pins and drop it.
+        if let Some(mut driver) = guard.take() {
+            self.retrieve_driver_pins(&mut driver);
+        }
+        // Existing driver gets dropped here
+
+        // Check which driver type we want to create.
+        // TODO
+
+        // Create the appropriate driver
+        let driver = self.create_iec_driver();
+        *guard = Some(driver);
+
+        Ok(())
     }
 
     // Initialize the correct driver type.
@@ -453,6 +482,8 @@ impl ProtocolHandler {
         self.state = ProtocolState::Initialized;
         update_status(DisplayType::Ready);
         UsbDataTransfer::lock_clear().await;
+
+        let _ = self.try_init_driver();
     }
 
     // Uninitialize the ProtocolHandler.  Any outstanding transfer is cleared.
