@@ -103,7 +103,7 @@ pub trait ProtocolDriver {
     /// # Arguments
     /// * `set` - Bitfield of lines to set (drive active)
     /// * `release` - Bitfield of lines to release (float/inactive)
-    async fn set_release(&mut self, set: u8, release: u8);
+    async fn setrelease(&mut self, set: u8, release: u8);
 }
 
 pub enum Driver {
@@ -160,11 +160,11 @@ impl ProtocolDriver for Driver {
         }
     }
 
-    async fn set_release(&mut self, set: u8, release: u8) {
+    async fn setrelease(&mut self, set: u8, release: u8) {
         match self {
-            Driver::Iec(driver) => driver.set_release(set, release).await,
-            Driver::Ieee(driver) => driver.set_release(set, release).await,
-            Driver::Tape(driver) => driver.set_release(set, release).await,
+            Driver::Iec(driver) => driver.setrelease(set, release).await,
+            Driver::Ieee(driver) => driver.setrelease(set, release).await,
+            Driver::Tape(driver) => driver.setrelease(set, release).await,
         }
     }
 }

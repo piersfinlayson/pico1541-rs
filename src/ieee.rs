@@ -40,7 +40,7 @@ impl ProtocolDriver for IeeeDriver {
         unimplemented!()
     }
 
-    async fn set_release(&mut self, set: u8, release: u8) {
+    async fn setrelease(&mut self, set: u8, release: u8) {
         unimplemented!()
     }
 }

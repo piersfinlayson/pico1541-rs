@@ -5,8 +5,6 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-#![allow(dead_code)]
-
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Flex, Pull};
@@ -23,21 +21,29 @@ use crate::watchdog::{feed_watchdog, TaskId};
 //
 // IEC protocol timers
 //
+#[allow(dead_code)]
 const IEC_T_AT: u32 = 1000; // Max ATN response required time (us)
                             //      IEC_T_H     inf  // Max listener hold-off time
 const IEC_T_NE: u32 = 40; // Typical non-EOI response to RFD time (us)
 const IEC_T_S: u32 = 20; // Min talker bit setup time (us, 70 typical)
 const IEC_T_V: u32 = 20; // Min data valid time (us, 20 typical)
+#[allow(dead_code)]
 const IEC_T_F: u32 = 1000; // Max frame handshake time (us, 20 typical)
 const IEC_T_R: u32 = 20; // Min frame to release of ATN time (us)
 const IEC_T_BB: u32 = 100; // Min time between bytes (us)
+#[allow(dead_code)]
 const IEC_T_YE: u32 = 200; // Min EOI response time (us, 250 typical)
+#[allow(dead_code)]
 const IEC_T_EI: u32 = 60; // Min EOI response hold time (us)
+#[allow(dead_code)]
 const IEC_T_RY: u32 = 60; // Max talker response limit (us, 30 typical)
+#[allow(dead_code)]
 const IEC_T_PR: u32 = 20; // Min byte acknowledge hold time (us, 30 typical)
                           //const IEC_T_TK: u32 = -1;   // 20/30/100 talk-attention release time (us)
                           //      IEC_T_DC    inf  // Talk-attention acknowledge time, 0 - inf
+#[allow(dead_code)]
 const IEC_T_DA: u32 = 80; // Min talk-attention ack hold time (us)
+#[allow(dead_code)]
 const IEC_T_FR: u32 = 60; // Min EOI acknowledge time (us)
 
 // An object representing the physical IEC bus.  Each Line is a pair of
@@ -50,25 +56,21 @@ pub struct IecBus {
     srq: Line,
 }
 
-// IEC pin bit masks (direct port mapping)
-pub const IO_DATA: u8 = 0x01;
-pub const IO_CLK: u8 = 0x02;
-pub const IO_ATN: u8 = 0x04;
-pub const IO_RESET: u8 = 0x08;
-pub const IO_SRQ: u8 = 0x10;
-
-// IEC protocol bit masks (logical representation)
+// IEC protocol bit masks - these are used by external applications
 pub const IEC_DATA: u8 = 0x01;
 pub const IEC_CLOCK: u8 = 0x02;
 pub const IEC_ATN: u8 = 0x04;
+#[allow(dead_code)]
 pub const IEC_RESET: u8 = 0x08;
 pub const IEC_SRQ: u8 = 0x10;
 
-// LED status constants
-pub const STATUS_INIT: u8 = 0;
-pub const STATUS_READY: u8 = 1;
-pub const STATUS_ACTIVE: u8 = 2;
-pub const STATUS_ERROR: u8 = 3;
+// IEC pin bit masks - these are used internally.  We use the same values as
+// the external masks to reduce the possibility of bugs.
+pub const IO_DATA: u8 = IEC_DATA;
+pub const IO_CLK: u8 = IEC_CLOCK;
+pub const IO_ATN: u8 = IEC_ATN;
+pub const IO_RESET: u8 = IEC_RESET;
+pub const IO_SRQ: u8 = IEC_SRQ;
 
 // Timer contants
 const BUS_FREE_CHECK_INTERVAL: Duration = Duration::from_millis(1);
@@ -193,6 +195,7 @@ impl Line {
     }
 
     /// Check if line is currently being driven low - inverted pin so high
+    #[allow(dead_code)]
     pub fn is_set(&self) -> bool {
         self.output_pin.as_ref().unwrap().is_set_high()
     }
@@ -387,30 +390,10 @@ impl IecBus {
     }
 
     /// Convert from IEC logical representation to physical, then perform set/release
-    pub fn iec_set_release(&mut self, set: u8, release: u8) {
+    #[allow(dead_code)]
+    pub fn setrelease(&mut self, set: u8, release: u8) {
         self.iec_set(set);
         self.iec_release(release);
-    }
-
-    /// Poll pins and convert to IEC logical representation
-    pub fn iec_poll(&self) -> u8 {
-        let pins = self.poll_pins();
-        let mut iec = 0;
-
-        if (pins & IO_DATA) != 0 {
-            iec |= IEC_DATA;
-        }
-        if (pins & IO_CLK) != 0 {
-            iec |= IEC_CLOCK;
-        }
-        if (pins & IO_ATN) != 0 {
-            iec |= IEC_ATN;
-        }
-        if (pins & IO_SRQ) != 0 {
-            iec |= IEC_SRQ;
-        }
-
-        iec
     }
 }
 
@@ -726,6 +709,8 @@ impl ProtocolDriver for IecDriver {
         Ok(())
     }
 
+    // This is an externally exposed function, which returns IEC_* lines, not
+    // IO_* lines (the latter being used internally)
     async fn poll(&mut self) -> u8 {
         let iec_state = self.bus.poll_pins();
         let mut rv = 0;
@@ -746,11 +731,10 @@ impl ProtocolDriver for IecDriver {
         rv
     }
 
-    /// Combined set and release operation
-    #[inline(always)]
-    async fn set_release(&mut self, set: u8, release: u8) {
-        self.bus.set_lines(set);
-        self.bus.release_lines(release);
+    // This is an externally exposed function, which takes and handles IEC_*
+    // lines, not IO_* lines (the latter being used internally)
+    async fn setrelease(&mut self, set: u8, release: u8) {
+        self.bus.setrelease(set, release);
     }
 }
 
@@ -759,7 +743,14 @@ impl IecDriver {
         Self { bus, eoi: false }
     }
 
-    pub fn retrieve_pins(&mut self) -> [(u8, Option<Flex<'static>>, u8, Option<Flex<'static>>); 5] {
+    /// Combined set and release operation
+    #[inline(always)]
+    async fn set_release(&mut self, set: u8, release: u8) {
+        self.bus.set_lines(set);
+        self.bus.release_lines(release);
+    }
+
+        pub fn retrieve_pins(&mut self) -> [(u8, Option<Flex<'static>>, u8, Option<Flex<'static>>); 5] {
         self.bus.retrieve_pins()
     }
 
