@@ -8,10 +8,10 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Flex, Pull};
-use embassy_time::{with_timeout, Delay, Duration, Timer, Instant};
+use embassy_time::{with_timeout, Delay, Duration, Instant, Timer};
 use embedded_hal::delay::DelayNs;
 
-use crate::constants::{MAX_EP_PACKET_SIZE, MAX_EP_PACKET_SIZE_USIZE, USB_DATA_TRANSFER_WAIT_TIMER};
+use crate::constants::{MAX_EP_PACKET_SIZE_USIZE, USB_DATA_TRANSFER_WAIT_TIMER};
 use crate::display::{update_status, DisplayType};
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::{ProtocolFlags, ProtocolType};
@@ -433,7 +433,7 @@ impl ProtocolDriver for IecDriver {
     async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError> {
         info!("Raw Read: {} bytes requested", len);
 
-        let mut buffer = [0u8; MAX_EP_PACKET_SIZE as usize];
+        let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
 
         let mut count: u16 = 0;
         let mut buf_count: usize = 0;
@@ -446,7 +446,11 @@ impl ProtocolDriver for IecDriver {
         UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
 
         // Main read loop
-        loop  {
+        let result = loop {
+            debug!(
+                "raw_read Loop start: count {}, buf_count {}",
+                count, buf_count
+            );
             // Wait for clock to be released, with 1s timeout.  Timing isn't
             // particularly critical here, so we can yield.
             let timeout = Instant::now() + Duration::from_secs(1);
@@ -460,23 +464,23 @@ impl ProtocolDriver for IecDriver {
                             break Err(DriverError::Timeout);
                         }
                         delay_yield!(WAIT_INTERVAL);
-        
+
                         if self.check_abort() {
-                            break Err(DriverError::Abort)
+                            break Err(DriverError::Abort);
                         }
                     }
                 }
             };
             if let Err(e) = result {
                 // Exit the loop rather than return in case there's some
-                // cleanning up later in the function. 
-                break Err(e)
+                // cleaning up later in the function.
+                break Err(e);
             }
 
             // Break if we've already seen EOI
             if self.eoi {
                 error!("Raw read: EOI detected");
-                return Err(DriverError::Io);
+                break Err(DriverError::Io);
             }
 
             // Release DATA line to signal we're ready for data
@@ -518,8 +522,7 @@ impl ProtocolDriver for IecDriver {
 
             // Send the data if we've filled up a USB packet, or we're
             // finished reading.
-            if buf_count >= MAX_EP_PACKET_SIZE as usize ||
-                count >= len {
+            if buf_count >= MAX_EP_PACKET_SIZE_USIZE || count >= len {
                 Self::send_data_to_host(&buffer, buf_count).await?;
                 buf_count = 0;
             }
@@ -529,14 +532,37 @@ impl ProtocolDriver for IecDriver {
             // Check if we're finished
             if count >= len {
                 info!("Raw read: received {} bytes and forwarded to host", count);
-                break Ok(count)
+                break Ok(count);
             }
+        };
+
+        if result.as_ref().err().is_some() {
+            if buf_count > 0 {
+                // Send any remaining data.  There should be fewer than 64
+                // bytes of data to send, as we should have sent the data
+                // immediately after hitting 64 bytes.
+                debug!("Hit error reading, sending outstanding {} bytes", buf_count);
+                assert!(buf_count < MAX_EP_PACKET_SIZE_USIZE);
+                Self::send_data_to_host(&buffer, buf_count).await?;
+            }
+            error!("Raw read: error {}", result.as_ref().err().unwrap());
         }
+
+        result
     }
 
     /// Send data to the drive
     ///
     /// Timing is critical in this function, so we use delay_block_us.
+    ///
+    /// When the read has finished it is important that the last USB packet
+    /// was either not the maximum size allowed, or, if it was, it is followed
+    /// by a zero length packet (ZLP).  This informs the host (via its USB
+    /// stack), that the bulk transfer has completed.  In our implementation,
+    /// this is handled by ProtocolHandler when it received the data we sent
+    /// it, using USB_DATA_TRANSFER, once we're done.  And done is signalled
+    /// by the task function that calls this one, so again, we don't need to
+    /// worry about it.
     async fn raw_write(
         &mut self,
         len: u16,
@@ -663,13 +689,15 @@ impl ProtocolDriver for IecDriver {
                     // timers less than 1us are not possible.
                     delay_block_us!(0); // try a similar trick
                                         //delay_block_us!(IEC_T_TK).await;
-        
+
                     // Release CLK and wait for device to grab it
                     self.bus.release_clock();
                     iec_delay!();
-        
-                    // Wait for device to pull CLOCK low before returning
-                    if self.wait(IO_CLK, 1).await.is_err() {
+
+                    // Wait for device to pull CLOCK low before returning.  As
+                    // self.wait() is an external API, it takes IEC_* lines
+                    // not IO_lines*
+                    if self.wait(IEC_CLOCK, 1).await.is_err() {
                         // Abort was signalled.
                         Err(DriverError::Abort)
                     } else {
@@ -711,7 +739,7 @@ impl ProtocolDriver for IecDriver {
 
     // This is an externally exposed function, which returns IEC_* lines, not
     // IO_* lines (the latter being used internally)
-    async fn poll(&mut self) -> u8 {
+    fn poll(&mut self) -> u8 {
         let iec_state = self.bus.poll_pins();
         let mut rv = 0;
 
@@ -733,8 +761,18 @@ impl ProtocolDriver for IecDriver {
 
     // This is an externally exposed function, which takes and handles IEC_*
     // lines, not IO_* lines (the latter being used internally)
-    async fn setrelease(&mut self, set: u8, release: u8) {
+    fn setrelease(&mut self, set: u8, release: u8) {
         self.bus.setrelease(set, release);
+    }
+
+    /// Get the End Of Indication (EOI) status
+    fn get_eoi(&self) -> bool {
+        self.eoi
+    }
+
+    /// Clear the End of Indiciation (EOI) status
+    fn clear_eoi(&mut self) {
+        self.eoi = false;
     }
 }
 
@@ -750,7 +788,7 @@ impl IecDriver {
         self.bus.release_lines(release);
     }
 
-        pub fn retrieve_pins(&mut self) -> [(u8, Option<Flex<'static>>, u8, Option<Flex<'static>>); 5] {
+    pub fn retrieve_pins(&mut self) -> [(u8, Option<Flex<'static>>, u8, Option<Flex<'static>>); 5] {
         self.bus.retrieve_pins()
     }
 
@@ -844,22 +882,22 @@ impl IecDriver {
     }
 
     /// Wait up to 2ms for lines to reach specified state.
-    /// 
+    ///
     /// poll_pins() returns the mask if the pin is high (inactive).
-    /// 
+    ///
     /// If state is the mask being tested for (i.e. IO_DATA, IO_DATA), then
     /// we wait until the line is low/active.
-    /// 
+    ///
     /// If the state is 0 (i.e. IO_DATA, 0), then we wait until the line is
     /// high/inactive.
-    /// 
+    ///
     /// If mask is two lines (i.e IO_ATN | IO_RESET) and state is 0, then we
     /// wait until at least one line is high/inactive.  If both lines remain
     /// low/active in this case, we return false.
-    /// 
+    ///
     /// We return true if the line got to the state and false otherwise.
-    /// 
-    /// We wait for up to 2ms. 
+    ///
+    /// We wait for up to 2ms.
     ///
     /// Timing is considered critical here to wait for around 2ms.  Hence we
     /// use delay_block_us.

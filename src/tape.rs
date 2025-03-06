@@ -36,11 +36,19 @@ impl ProtocolDriver for TapeDriver {
         unimplemented!()
     }
 
-    async fn poll(&mut self) -> u8 {
+    fn poll(&mut self) -> u8 {
         unimplemented!()
     }
 
-    async fn setrelease(&mut self, set: u8, release: u8) {
+    fn setrelease(&mut self, set: u8, release: u8) {
+        unimplemented!()
+    }
+
+    fn get_eoi(&self) -> bool {
+        unimplemented!()
+    }
+
+    fn clear_eoi(&mut self) {
         unimplemented!()
     }
 }

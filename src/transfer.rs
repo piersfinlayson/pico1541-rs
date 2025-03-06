@@ -86,7 +86,7 @@ impl UsbDataTransfer {
         self.data = [0; TRANSFER_DATA_BUFFER_SIZE];
         self.read_pos = 0;
         self.valid_bytes = 0;
-        self.response = UsbTransferResponse::None; 
+        self.response = UsbTransferResponse::None;
     }
 
     /// Clear the transfer

@@ -96,14 +96,20 @@ pub trait ProtocolDriver {
     ///
     /// # Returns
     /// A bitfield representing the current state of all bus lines
-    async fn poll(&mut self) -> u8;
+    fn poll(&mut self) -> u8;
 
     /// Configure which bus lines should be set or released.
     ///
     /// # Arguments
     /// * `set` - Bitfield of lines to set (drive active)
     /// * `release` - Bitfield of lines to release (float/inactive)
-    async fn setrelease(&mut self, set: u8, release: u8);
+    fn setrelease(&mut self, set: u8, release: u8);
+
+    /// Get the End Of Indication (EOI) status
+    fn get_eoi(&self) -> bool;
+
+    /// Clear the End of Indiciation (EOI) status
+    fn clear_eoi(&mut self);
 }
 
 pub enum Driver {
@@ -152,19 +158,35 @@ impl ProtocolDriver for Driver {
         }
     }
 
-    async fn poll(&mut self) -> u8 {
+    fn poll(&mut self) -> u8 {
         match self {
-            Driver::Iec(driver) => driver.poll().await,
-            Driver::Ieee(driver) => driver.poll().await,
-            Driver::Tape(driver) => driver.poll().await,
+            Driver::Iec(driver) => driver.poll(),
+            Driver::Ieee(driver) => driver.poll(),
+            Driver::Tape(driver) => driver.poll(),
         }
     }
 
-    async fn setrelease(&mut self, set: u8, release: u8) {
+    fn setrelease(&mut self, set: u8, release: u8) {
         match self {
-            Driver::Iec(driver) => driver.setrelease(set, release).await,
-            Driver::Ieee(driver) => driver.setrelease(set, release).await,
-            Driver::Tape(driver) => driver.setrelease(set, release).await,
+            Driver::Iec(driver) => driver.setrelease(set, release),
+            Driver::Ieee(driver) => driver.setrelease(set, release),
+            Driver::Tape(driver) => driver.setrelease(set, release),
+        }
+    }
+
+    fn get_eoi(&self) -> bool {
+        match self {
+            Driver::Iec(driver) => driver.get_eoi(),
+            Driver::Ieee(driver) => driver.get_eoi(),
+            Driver::Tape(driver) => driver.get_eoi(),
+        }
+    }
+
+    fn clear_eoi(&mut self) {
+        match self {
+            Driver::Iec(driver) => driver.clear_eoi(),
+            Driver::Ieee(driver) => driver.clear_eoi(),
+            Driver::Tape(driver) => driver.clear_eoi(),
         }
     }
 }

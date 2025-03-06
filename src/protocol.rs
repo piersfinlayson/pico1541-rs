@@ -175,7 +175,7 @@ impl ProtocolHandler {
 
     fn create_iec_driver(&mut self) -> Driver {
         debug!("Creating IEC driver");
-        
+
         // Create the lines
         let clock_line = Line::new(
             self.iec_pins.clock_in,
@@ -242,7 +242,7 @@ impl ProtocolHandler {
                 warn!("Failed to lock driver mutex {}", e);
                 return Err(());
             }
-        }; 
+        };
 
         // If we have a driver already we need to remove the pins and drop it.
         if let Some(mut driver) = guard.take() {
@@ -380,32 +380,21 @@ impl ProtocolHandler {
             }
         };
 
-        if !command.protocol.supported() {
-            warn!("Unsupported protocol: {:?}", command.protocol);
-            match command.command {
-                CommandType::Read => {
-                    // Drop the request as we aren't allow to send a status
-                }
-                CommandType::Write => {
+        match command.command {
+            // Create a new OUT/write transfer.
+            CommandType::Write => {
+                info!("Host to WRITE {} bytes", command.len);
+
+                if !command.protocol.supported() {
                     // Try to send an error
                     self.send_status(Status {
                         code: StatusCode::Error,
                         value: command.len,
                     })
                     .await;
+                    update_status(DisplayType::Error);
+                    return;
                 }
-                _ => {
-                    // The rest are unsupported - just drop
-                }
-            };
-            update_status(DisplayType::Error);
-            return;
-        }
-
-        match command.command {
-            // Create a new OUT/write transfer.
-            CommandType::Write => {
-                info!("Host to WRITE {} bytes", command.len);
 
                 // TODO Should check command.len < 32KB and send error resonse
                 // but that would make this code more complex, and we don't
@@ -434,6 +423,13 @@ impl ProtocolHandler {
             CommandType::Read => {
                 info!("Host to READ {} bytes", command.len);
 
+                if !command.protocol.supported() {
+                    // Send a zero length packet (we don't send status in
+                    // response to a read error).
+                    let _ = self.write_ep.write(&[]).await;
+                    update_status(DisplayType::Error);
+                }
+
                 // TODO again, strictly we should check len < 32KB
 
                 UsbDataTransfer::lock_init(Direction::In, command.len).await;
@@ -448,6 +444,83 @@ impl ProtocolHandler {
                     warn!("Failed to spawn raw_read task {}", e);
                     UsbDataTransfer::lock_clear().await;
                 }
+            }
+
+            CommandType::GetEoi => {
+                debug!("Get EOI");
+                let value = match DRIVER.lock().await.as_ref().unwrap().get_eoi() {
+                    true => 1,
+                    false => 0,
+                };
+                debug!("EOI: {}", value);
+                self.send_status(Status {
+                    code: StatusCode::Ok,
+                    value,
+                })
+                .await;
+            }
+            CommandType::ClearEoi => {
+                debug!("Clear EOI");
+                DRIVER.lock().await.as_mut().unwrap().clear_eoi();
+                self.send_status(Status {
+                    code: StatusCode::Ok,
+                    value: 0,
+                })
+                .await;
+            }
+            CommandType::IecWait => {
+                let line = command.bytes[1];
+                let state = command.bytes[2];
+                debug!("IEC Wait - line(s): 0x{:02x}, state: 0x{:02x}", line, state);
+                match DRIVER
+                    .lock()
+                    .await
+                    .as_mut()
+                    .unwrap()
+                    .wait(line, state)
+                    .await
+                {
+                    Ok(_) => {
+                        debug!("IEC Wait - success");
+                        self.send_status(Status {
+                            code: StatusCode::Ok,
+                            value: 0,
+                        })
+                        .await;
+                    }
+                    Err(e) => {
+                        warn!("IEC Wait - error: {}", e);
+                    }
+                }
+            }
+            CommandType::IecPoll => {
+                debug!("IEC Poll");
+                let value = DRIVER.lock().await.as_mut().unwrap().poll();
+                debug!("IEC Poll - value: 0x{:02x}", value);
+                self.send_status(Status {
+                    code: StatusCode::Ok,
+                    value: value as u16,
+                })
+                .await;
+            }
+            CommandType::IecSetRelease => {
+                let set = command.bytes[1];
+                let release = command.bytes[2];
+                debug!(
+                    "IEC Set/Release - set: 0x{:02x}, release: 0x{:02x}",
+                    set, release
+                );
+                DRIVER
+                    .lock()
+                    .await
+                    .as_mut()
+                    .unwrap()
+                    .setrelease(set, release);
+                self.send_status(Status {
+                    code: StatusCode::Ok,
+                    value: 0,
+                })
+                .await;
             }
 
             // The rest are unsupported - just drop
@@ -598,8 +671,11 @@ impl ProtocolHandler {
 
                 // If there's as much as an endpoint packet size to send, we
                 // will send.  Or, if we're done and there are bytes to send,
-                // send them.
-                if outstanding_bytes >= MAX_EP_PACKET_SIZE_USIZE
+                // send them.  If we're done with the transfer and our final
+                // buffer was a 64-byte one, or there's no further bytes to
+                // send we need to send a zero length packet, so the host
+                // knows the transfer is complete.
+                let sent = if outstanding_bytes >= MAX_EP_PACKET_SIZE_USIZE
                     || (response != UsbTransferResponse::None && outstanding_bytes > 0)
                 {
                     // We either have a full 64 bytes to send, or we're done
@@ -619,32 +695,54 @@ impl ProtocolHandler {
 
                     let result = guard.try_get_next_bytes(&mut buffer[..bytes_to_send]);
 
-                    match result {
+                    let size = match result {
                         Some(size) => {
                             // Send the bytes
                             let result = self.write_ep.write(&buffer[..size]).await;
                             match result {
                                 Ok(_) => {
-                                    // We sent the bytes - update the outstanding
-                                    // bytes count
+                                    // We sent the bytes
+                                    debug!("Successfully sent {} bytes", size);
+
+                                    // update the outstanding bytes count
                                     outstanding_bytes -= size;
+
+                                    // We sent this many bytes.
+                                    size
                                 }
                                 Err(e) => {
+                                    // Drop any remaining data
                                     warn!("Failed to send IN data {}", e);
+                                    outstanding_bytes = 0;
+
+                                    // Say we sent 0 bytes, in order go get
+                                    // ZLP sent.
+                                    0
                                 }
                             }
                         }
                         None => {
+                            // Drop any remaining data
                             warn!("Failed to get bytes to send");
+                            outstanding_bytes = 0;
+
+                            // Say we sent 0 bytes in order to get ZLP sent.
+                            0
                         }
-                    }
+                    };
 
                     if outstanding_bytes > 0 {
                         // There are still bytes to send - we'll be
                         // rescheduled to send them soon.
                         return;
                     }
-                }
+
+                    // Indicate how many bytes we sent
+                    size
+                } else {
+                    // No bytes to send, so indicate we didn't send any.
+                    0
+                };
 
                 // Now see if the IN/read transfer is done
                 if response != UsbTransferResponse::None {
@@ -652,9 +750,18 @@ impl ProtocolHandler {
                     debug!("IN transfer complete ({})", response);
 
                     // Do not send a response in the IN/read case, as one is
-                    // not supported by the protocol.
+                    // not supported by the protocol.  Instead, if the last
+                    // data sent wasn't 1-63 bytes, send a zero length packet.
+                    if sent == 0 || sent == MAX_EP_PACKET_SIZE_USIZE {
+                        let _ = self
+                            .write_ep
+                            .write(&[])
+                            .await
+                            .inspect(|_| debug!("ZLP sent"))
+                            .inspect_err(|e| warn!("Failed to complete read with ZLP: {}", e));
+                    }
 
-                    // Clear the transfer
+                    // Transfer complete - clear it
                     guard.clear();
                 }
             }
@@ -736,6 +843,7 @@ pub async fn protocol_handler_task() -> ! {
 }
 
 // The type of Command received from the host.
+#[derive(Debug, PartialEq)]
 pub enum CommandType {
     // The host is requesting data from the device.
     Read = 0x08,
@@ -852,6 +960,9 @@ pub struct Command {
     // in the third and fourth bytes of the command packet as a little endian
     // u16.
     len: u16,
+
+    // Store the third byte off the actual bytes
+    bytes: [u8; Command::LEN as usize],
 }
 
 impl Command {
@@ -884,27 +995,35 @@ impl Command {
             }
         };
 
-        // Check the protocol is supported.
-        let protocol = match ProtocolType::try_from(bytes[1]) {
-            Ok(proto) => proto,
-            Err(_) => {
-                info!("Unsupported protocol: 0x{:02x}", bytes[1]);
-                return Err(());
-            }
-        };
-
-        // Check the flags are supported.
-        let flags = match ProtocolFlags::try_from(bytes[1]) {
-            Ok(flags) => {
-                if flags.is_any() && protocol != ProtocolType::Cbm {
+        // Check the protocol is supported (for Read and Write commands only).
+        let protocol = if command == CommandType::Read || command == CommandType::Write {
+            match ProtocolType::try_from(bytes[1]) {
+                Ok(proto) => proto,
+                Err(_) => {
+                    info!("Unsupported protocol: 0x{:02x}", bytes[1]);
                     return Err(());
                 }
-                flags
             }
-            Err(_) => {
-                info!("Unsupported flags: 0x{:02x}", bytes[1]);
-                return Err(());
+        } else {
+            ProtocolType::None
+        };
+
+        // Check the flags are supported (for Read and Write Commands only).
+        let flags = if command == CommandType::Read || command == CommandType::Write {
+            match ProtocolFlags::try_from(bytes[1]) {
+                Ok(flags) => {
+                    if flags.is_any() && protocol != ProtocolType::Cbm {
+                        return Err(());
+                    }
+                    flags
+                }
+                Err(_) => {
+                    info!("Unsupported flags: 0x{:02x}", bytes[1]);
+                    return Err(());
+                }
             }
+        } else {
+            ProtocolFlags::NONE
         };
 
         // Get the length of any data associated with this command.
@@ -916,6 +1035,7 @@ impl Command {
             protocol,
             flags,
             len,
+            bytes: [bytes[0], bytes[1], bytes[2], bytes[3]],
         })
     }
 }
@@ -924,6 +1044,7 @@ impl Command {
 #[repr(u8)]
 #[derive(Clone, defmt::Format, PartialEq)]
 pub enum ProtocolType {
+    None = 0x00,
     Cbm = 0x10,
     S1 = 0x20,
     S2 = 0x30,
