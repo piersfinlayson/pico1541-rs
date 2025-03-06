@@ -26,8 +26,8 @@ pub static DRIVER: Mutex<ThreadModeRawMutex, Option<Driver>> = Mutex::new(None);
 pub enum DriverError {
     /// Device timeout - no response within expected time
     Timeout,
-    /// A reset cancelled this operation
-    Resetting,
+    /// The operation was aborted
+    Abort,
     /// Bus was occupied
     BusOccupied,
     /// No devices detected

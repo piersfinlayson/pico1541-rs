@@ -6,10 +6,11 @@
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
 #![allow(dead_code)]
+
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Flex, Pull};
-use embassy_time::{with_timeout, Delay, Duration, Timer};
+use embassy_time::{with_timeout, Delay, Duration, Timer, Instant};
 use embedded_hal::delay::DelayNs;
 
 use crate::constants::{MAX_EP_PACKET_SIZE, MAX_EP_PACKET_SIZE_USIZE, USB_DATA_TRANSFER_WAIT_TIMER};
@@ -462,21 +463,31 @@ impl ProtocolDriver for IecDriver {
         UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
 
         // Main read loop
-        while count < len {
-            let mut timeout = 0;
-
-            // Wait for clock to be released, with 1s timeout
-            while self.bus.get_clock() {
-                if timeout >= 50000 {
-                    error!("Raw read: timeout waiting for clock");
-                    return Err(DriverError::Timeout);
+        loop  {
+            // Wait for clock to be released, with 1s timeout.  Timing isn't
+            // particularly critical here, so we can yield.
+            let timeout = Instant::now() + Duration::from_secs(1);
+            let result = loop {
+                let clock_released = !self.bus.get_clock();
+                match clock_released {
+                    true => break Ok(()),
+                    false => {
+                        if Instant::now() > timeout {
+                            error!("Raw read: timeout waiting for clock");
+                            break Err(DriverError::Timeout);
+                        }
+                        delay_yield!(WAIT_INTERVAL);
+        
+                        if self.check_abort() {
+                            break Err(DriverError::Abort)
+                        }
+                    }
                 }
-                timeout += 1;
-                delay_block_us!(20);
-
-                if self.check_abort() {
-                    return Err(DriverError::Resetting);
-                }
+            };
+            if let Err(e) = result {
+                // Exit the loop rather than return in case there's some
+                // cleanning up later in the function. 
+                break Err(e)
             }
 
             // Break if we've already seen EOI
@@ -489,14 +500,14 @@ impl ProtocolDriver for IecDriver {
             self.bus.release_data();
 
             // Wait up to 400us for CLK to be pulled by the drive
-            let mut wait_count = 200;
-            while !self.bus.get_clock() && wait_count > 0 {
-                wait_count -= 1;
+            let timeout = Instant::now() + Duration::from_micros(400);
+            while !self.bus.get_clock() && Instant::now() < timeout {
                 delay_block_us!(2);
             }
 
             // Check for EOI signalling from talker
             if !self.bus.get_clock() {
+                debug!("Clock high - so EOI signalled");
                 self.eoi = true;
                 self.bus.set_data();
                 delay_block_us!(70);
@@ -509,8 +520,8 @@ impl ProtocolDriver for IecDriver {
                     // Acknowledge byte received by pulling DATA
                     self.bus.set_data();
 
+                    // Store the byte in our buffer
                     buffer[buf_count] = byte;
-
                     buf_count += 1;
                     count += 1;
 
@@ -518,26 +529,26 @@ impl ProtocolDriver for IecDriver {
                 }
                 Err(e) => {
                     error!("Raw read: error receiving byte");
-                    return Err(e);
+                    break Err(e);
                 }
             }
 
-            if buf_count >= MAX_EP_PACKET_SIZE as usize {
+            // Send the data if we've filled up a USB packet, or we're
+            // finished reading.
+            if buf_count >= MAX_EP_PACKET_SIZE as usize ||
+                count >= len {
                 Self::send_data_to_host(&buffer, buf_count).await?;
                 buf_count = 0;
             }
 
             feed_watchdog(TaskId::ProtocolHandler);
-        }
 
-        if buf_count > 0 {
-            // Send the remaining data to the host
-            Self::send_data_to_host(&buffer, buf_count).await?;
-            // buf_count = 0; // unnecessary
+            // Check if we're finished
+            if count >= len {
+                info!("Raw read: received {} bytes and forwarded to host", count);
+                break Ok(count)
+            }
         }
-
-        info!("Raw read: received {} bytes and forwarded to host", count);
-        Ok(count)
     }
 
     /// Send data to the drive
@@ -600,7 +611,7 @@ impl ProtocolDriver for IecDriver {
 
         // Send bytes as soon as the device is ready
         let mut count = 0;
-        while count < len {
+        let result = loop {
             // Need to signal EOI for the last byte
             let is_last_byte = count == len - 1;
 
@@ -612,7 +623,7 @@ impl ProtocolDriver for IecDriver {
             // Be sure DATA line has been pulled by device
             if !self.bus.get_data() {
                 error!("Raw write: Device not present");
-                return Err(DriverError::NoDevice);
+                break Err(DriverError::NoDevice);
             }
 
             debug!("Data line low");
@@ -620,7 +631,7 @@ impl ProtocolDriver for IecDriver {
             // Release CLK and wait for listener to release data
             if !self.wait_for_listener().await {
                 error!("Raw write: No listener");
-                return Err(DriverError::Timeout);
+                break Err(DriverError::Timeout);
             }
 
             debug!("Listener released DATA");
@@ -642,41 +653,58 @@ impl ProtocolDriver for IecDriver {
             } else {
                 error!("Raw write: io err");
                 // TODO - async read handling
-                return Err(DriverError::Io);
+                break Err(DriverError::Io);
             }
 
             feed_watchdog(TaskId::ProtocolHandler);
-        }
 
-        debug!("Sent data");
-
-        // Talk-ATN turn around if requested
-        if talk {
-            // Hold DATA and release ATN
-            self.set_release(IO_DATA, IO_ATN).await;
-            // IEC_T_TK was defined to be -1 in the original C code which
-            // presumably meant to make the delay sub micro-second.  We'll try
-            // to oblige.  The embassy-rp documentation indicates that when
-            // time-driver feature is enabled (which it is), the RP2040 TIMER
-            // device is used for embassy-time time at a tick rate of 1MHz.  So,
-            // timers less than 1us are not possible.
-            delay_block_us!(0); // try a similar trick
-                                //delay_block_us!(IEC_T_TK).await;
-
-            // Release CLK and wait for device to grab it
-            self.bus.release_clock();
-            iec_delay!();
-
-            // Wait for device forever
-            if self.wait(IO_CLK, 1).await.is_err() {
-                return Ok(count);
+            // Break if we've sent all the bytes
+            if count >= len {
+                break Ok(());
             }
-        } else {
-            self.bus.release_atn();
-        }
+        };
 
-        info!("Raw write: wrote {} bytes", count);
-        Ok(count)
+        debug!("Sent data: {}", result);
+
+        match result {
+            Ok(_) => {
+                // Talk-ATN turn around if requested
+                if talk {
+                    // Hold DATA and release ATN
+                    self.set_release(IO_DATA, IO_ATN).await;
+                    // IEC_T_TK was defined to be -1 in the original C code which
+                    // presumably meant to make the delay sub micro-second.  We'll try
+                    // to oblige.  The embassy-rp documentation indicates that when
+                    // time-driver feature is enabled (which it is), the RP2040 TIMER
+                    // device is used for embassy-time time at a tick rate of 1MHz.  So,
+                    // timers less than 1us are not possible.
+                    delay_block_us!(0); // try a similar trick
+                                        //delay_block_us!(IEC_T_TK).await;
+        
+                    // Release CLK and wait for device to grab it
+                    self.bus.release_clock();
+                    iec_delay!();
+        
+                    // Wait for device to pull CLOCK low before returning
+                    if self.wait(IO_CLK, 1).await.is_err() {
+                        // Abort was signalled.
+                        Err(DriverError::Abort)
+                    } else {
+                        debug!("Raw write: wrote {} bytes - talk", count);
+                        Ok(count)
+                    }
+                } else {
+                    self.bus.release_atn();
+                    debug!("Raw write: wrote {} bytes", count);
+                    Ok(count)
+                }
+            }
+            Err(e) => {
+                delay_block_us!(IEC_T_R);
+                self.bus.iec_release(IO_CLK | IO_ATN);
+                Err(e)
+            }
+        }
     }
 
     // As this is wait forever, timing witht he loop isn't critical, so we use
@@ -689,7 +717,7 @@ impl ProtocolDriver for IecDriver {
         while (self.bus.poll_pins() & hw_mask) == hw_state {
             // Check if we should cancel
             if self.check_abort() {
-                return Err(DriverError::Resetting);
+                return Err(DriverError::Abort);
             }
 
             delay_yield!(WAIT_INTERVAL);
@@ -867,7 +895,7 @@ impl IecDriver {
 
                 // Check if we should cancel
                 if device.check_abort() {
-                    return Err(DriverError::Resetting);
+                    return Err(DriverError::Abort);
                 }
 
                 // Wait so we don't tight loop
