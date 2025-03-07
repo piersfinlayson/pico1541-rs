@@ -17,6 +17,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::Timer;
 
 use crate::constants::{TRANSFER_DATA_BUFFER_SIZE, USB_DATA_TRANSFER_WAIT_TIMER};
+use crate::protocol::ProtocolType;
 use crate::types::Direction;
 
 /// A static for IN/Read and OUT/Write USB bulk data transfers between the
@@ -39,6 +40,10 @@ pub struct UsbDataTransfer {
     /// Which direction the transfer is in.  In means from device to host, Out
     /// means from host to device.  None means the transfer is inactive.
     direction: Option<Direction>,
+
+    // The protocol for this transfer.  This is used for ProtocolHandler to
+    // device whether to send a status response once the transfer is complete.
+    protocol: Option<ProtocolType>,
 
     /// Total expected bytes in this operation
     expected_bytes: u16,
@@ -68,6 +73,7 @@ impl UsbDataTransfer {
     const fn new_default() -> Self {
         Self {
             direction: None,
+            protocol: None,
             expected_bytes: 0,
             received_bytes: 0,
             data: [0; TRANSFER_DATA_BUFFER_SIZE],
@@ -78,9 +84,10 @@ impl UsbDataTransfer {
     }
 
     /// Initialize the transfer
-    pub fn init(&mut self, direction: Direction, expected_bytes: u16) {
+    pub fn init(&mut self, direction: Direction, protocol: ProtocolType, expected_bytes: u16) {
         // TODO consider optimising out the clearing of the data buffer
         self.direction = Some(direction);
+        self.protocol = Some(protocol);
         self.expected_bytes = expected_bytes;
         self.received_bytes = 0;
         self.data = [0; TRANSFER_DATA_BUFFER_SIZE];
@@ -92,15 +99,22 @@ impl UsbDataTransfer {
     /// Clear the transfer
     pub fn clear(&mut self) {
         self.direction = None;
+        self.protocol = None;
         self.expected_bytes = 0;
         self.received_bytes = 0;
         self.read_pos = 0;
         self.valid_bytes = 0;
+        self.response = UsbTransferResponse::None;
     }
 
     /// Get the direction of the transfer
     pub fn direction(&self) -> Option<Direction> {
         self.direction
+    }
+
+    /// Get the protcol of the transfer
+    pub fn protocol(&self) -> Option<ProtocolType> {
+        self.protocol
     }
 
     /// Get the response
@@ -254,9 +268,9 @@ impl UsbDataTransfer {
 // USB_DATA_TRANSFER static.
 impl UsbDataTransfer {
     /// Initialize the transfer
-    pub async fn lock_init(direction: Direction, expected_bytes: u16) {
+    pub async fn lock_init(direction: Direction, protocol: ProtocolType, expected_bytes: u16) {
         let mut guard = USB_DATA_TRANSFER.lock().await;
-        guard.init(direction, expected_bytes)
+        guard.init(direction, protocol, expected_bytes)
     }
 
     /// Clear the transfer

@@ -400,7 +400,7 @@ impl ProtocolHandler {
                 // but that would make this code more complex, and we don't
                 // actually care if the len is longer than that.
 
-                UsbDataTransfer::lock_init(Direction::Out, command.len).await;
+                UsbDataTransfer::lock_init(Direction::Out, command.protocol, command.len).await;
 
                 // Spawn the transfer
                 let spawner = Spawner::for_current_executor().await;
@@ -432,7 +432,7 @@ impl ProtocolHandler {
 
                 // TODO again, strictly we should check len < 32KB
 
-                UsbDataTransfer::lock_init(Direction::In, command.len).await;
+                UsbDataTransfer::lock_init(Direction::In, command.protocol, command.len).await;
 
                 // Spawn the transfer
                 let spawner = Spawner::for_current_executor().await;
@@ -650,10 +650,16 @@ impl ProtocolHandler {
                     // It is done
                     debug!("OUT transfer complete ({})", status.code);
 
-                    // Send the response
-                    let result = self.write_ep.write(&status.to_bytes()).await;
-                    if let Err(e) = result {
-                        warn!("Failed to send status {}", e);
+                    // We only send a response on Cbm and Tape protocols
+                    let send_response = guard.protocol().map_or(false, |p| p.write_send_status());
+
+                    if send_response {
+                        // Send the response
+                        debug!("Send OUT transfer status");
+                        let result = self.write_ep.write(&status.to_bytes()).await;
+                        if let Err(e) = result {
+                            warn!("Failed to send status {}", e);
+                        }
                     }
 
                     // Clear the transfer
@@ -817,7 +823,7 @@ pub async fn protocol_handler_task() -> ! {
     register_task(TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER);
 
     // Initialize the ProtocolHandler
-    protocol_handler.initialize().await; 
+    protocol_handler.initialize().await;
 
     // Start the protocol handling loop
     let mut next_log_instant = Instant::now();
@@ -1045,7 +1051,7 @@ impl Command {
 
 /// Supported Bulk command protocols.
 #[repr(u8)]
-#[derive(Clone, defmt::Format, PartialEq)]
+#[derive(Clone, Copy, defmt::Format, PartialEq)]
 pub enum ProtocolType {
     None = 0x00,
     Cbm = 0x10,
@@ -1065,6 +1071,10 @@ impl ProtocolType {
     /// Whether the Protocol is supported
     fn supported(&self) -> bool {
         matches!(self, Self::Cbm)
+    }
+
+    fn write_send_status(&self) -> bool {
+        *self == Self::Cbm || *self == Self::Tap || *self == Self::TapConfig
     }
 }
 
