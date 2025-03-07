@@ -1,3 +1,10 @@
+All of the source code in this repository is copyright (c) 2025 Piers Finlayson.
+
+The source code is licensed under the GPL v3 license, and this license is provided below.
+
+However, the contents of the `pcb/` directory (which contains information required to build your own version of the pico1541 hardware), has its own license.  The license for those files is supplied in the `pcb/` direcory.
+
+
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 
