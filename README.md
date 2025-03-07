@@ -53,7 +53,7 @@ cd pico1541-rs
 cargo run --bin xum1541 --features xum1541
 ```
 
-That's it - the pico1541 will now be up and running and connected to the USB bus, presenting itself as an xum1541. 
+That's it - the pico1541 will now be up and running and connected to the USB bus, presenting itself as an xum1541.  See [`pcb/pico1541_schematic.pdf`](pcb/pico1541_schematic.pdf) for the pins used by this configuration.
 
 For more instructions on building and running, see [BUILD.md](BUILD.md).
 

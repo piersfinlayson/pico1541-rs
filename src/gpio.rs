@@ -27,28 +27,50 @@ pub static GPIO: Mutex<CriticalSectionRawMutex, Option<Gpio>> = Mutex::new(None)
 
 /// GPIO configurations for different device types
 pub mod config {
+    // We allow dead code in this module because some of the configuration
+    // settings wil not be included, depending on the device the firmware is
+    // being built for.
     #![allow(dead_code)]
     use super::*;
 
     /// Standard configuration for original hardware
-    pub fn standard() -> PinConfig {
+    pub fn standard_protoype() -> PinConfig {
         PinConfig {
             status_display_pin: 25,
-            iec_pins: iec(),
-            ieee_pins: ieee(),
+            iec_pins: iec_prototype(),
+            ieee_pins: ieee_prototype(),
+        }
+    }
+
+    /// Configuration for v0.1 board
+    pub fn standard_v0_1() -> PinConfig {
+        PinConfig {
+            status_display_pin: 25,
+            iec_pins: iec_pico1541_v0_1(),
+            ieee_pins: ieee_pico1541_v0_1(),
         }
     }
 
     /// Configuration for pico1541w variant
-    pub fn pico1541w() -> PinConfig {
+    pub fn pico1541w_protoype() -> PinConfig {
         PinConfig {
             status_display_pin: 0,
-            iec_pins: iec(),
-            ieee_pins: ieee(),
+            iec_pins: iec_prototype(),
+            ieee_pins: ieee_prototype(),
         }
     }
 
-    fn iec() -> IecPinConfig {
+    /// Configuration for pico1541w v0.1 board
+    pub fn pico1541w_v0_1() -> PinConfig {
+        PinConfig {
+            status_display_pin: 0,
+            iec_pins: iec_pico1541_v0_1(),
+            ieee_pins: ieee_pico1541_v0_1(),
+        }
+    }
+
+    // Pinout used for initial prototyping
+    fn iec_prototype() -> IecPinConfig {
         IecPinConfig {
             clock_in: 2,
             clock_out: 3,
@@ -63,7 +85,24 @@ pub mod config {
         }
     }
 
-    fn ieee() -> IeeePinConfig {
+    // Pinout used for pico1541 v0.1 board
+    fn iec_pico1541_v0_1() -> IecPinConfig {
+        IecPinConfig {
+            clock_in: 21,
+            clock_out: 11,
+            data_in: 20,
+            data_out: 13,
+            atn_in: 17,
+            atn_out: 12,
+            reset_in: 18,
+            reset_out: 10,
+            srq_in: 16,
+            srq_out: 14,
+        }
+    }
+
+    // Pinout used for initial prototyping
+    fn ieee_prototype() -> IeeePinConfig {
         IeeePinConfig {
             nrfd_in: 2,
             nrfd_out: 3,
@@ -76,6 +115,23 @@ pub mod config {
             srq_in: 10,
             srq_out: 11,
             d_io: [12, 13, 14, 15, 16, 17, 18, 19],
+        }
+    }
+
+    // Pinout used for pico1541 v0.1 board
+    fn ieee_pico1541_v0_1() -> IeeePinConfig {
+        IeeePinConfig {
+            nrfd_in: 21,
+            nrfd_out: 11,
+            ndac_in: 20,
+            ndac_out: 13,
+            atn_in: 17,
+            atn_out: 12,
+            ifc_in: 18,
+            ifc_out: 10,
+            srq_in: 16,
+            srq_out: 14,
+            d_io: [2, 3, 4, 5, 9, 8, 7, 6],
         }
     }
 }
@@ -173,12 +229,26 @@ impl Default for PinConfig {
     fn default() -> Self {
         #[cfg(not(feature = "pico1541w"))]
         {
-            config::standard()
+            #[cfg(feature = "prototype")]
+            {
+                config::standard_protoype()
+            }
+            #[cfg(not(feature = "prototype"))]
+            {
+                config::standard_v0_1()
+            }
         }
 
         #[cfg(feature = "pico1541w")]
         {
-            config::pico1541w()
+            #[cfg(feature = "prototype")]
+            {
+                config::pico1541w_protoype()
+            }
+            #[cfg(not(feature = "prototype"))]
+            {
+                config::pico1541w_v0_1()
+            }
         }
     }
 }

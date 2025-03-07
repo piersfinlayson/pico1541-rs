@@ -89,6 +89,12 @@ usb 1-1: Manufacturer: piers.rocks
 usb 1-1: SerialNumber: 000
 ```
 
+The pinouts used by the firmware are shown in the [schematic](pcb/pico1541_schematic.pdf).  There are other pin mappings supported via Cargo features.  These are defined in the `config` module within [`gpio.rs`](src/gpio.rs).  For example, to use the prototype pin mapping add the `prototype` feature like this:
+
+```bash
+cargo run --bin xum1541 --features xum1541,prototype
+``` 
+
 ## Debugging
 
 embassy-rs based applications expect to be debugged by Debug Probe.  See [Setting up a Pico Probe](#setting-up-a-pico-probe)
