@@ -816,6 +816,9 @@ pub async fn protocol_handler_task() -> ! {
     // Register with the watchdog
     register_task(TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER);
 
+    // Initialize the ProtocolHandler
+    protocol_handler.initialize().await; 
+
     // Start the protocol handling loop
     let mut next_log_instant = Instant::now();
     loop {

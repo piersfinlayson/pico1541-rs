@@ -174,7 +174,7 @@ impl Control {
             req.index, req.request_type, req.recipient, dir);
 
         // Only handle Class request types to an Interface.
-        if req.request_type != RequestType::Class || req.recipient != Recipient::Interface {
+        if req.request_type != RequestType::Class || req.recipient != Recipient::Device {
             info!(
                 "Ignoring Control request type: 0x{:02x}, recipient: {:?}",
                 req.request_type, req.recipient
