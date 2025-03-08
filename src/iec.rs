@@ -684,7 +684,7 @@ impl IecDriver {
 // Implementations of read for the various supported protocols
 impl IecDriver {
     /// Implements standard Commodore IEC read support
-    /// 
+    ///
     /// Timing is critical in this function, so we use delay_block_us.
     async fn cbm_read(&mut self, len: u16) -> Result<u16, DriverError> {
         let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
