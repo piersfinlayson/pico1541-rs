@@ -216,10 +216,11 @@ impl UsbStack {
 // Method to run the USB stack.
 #[embassy_executor::task]
 pub async fn usb_task(usb: &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>>) -> ! {
-    // Run the USB Device runner.
+    // Run the USB Device runner.  This loop is the internal implemenation of
+    // usb.run().
     loop {
         // Run the USB stack until it suspends.  This is a blocking call and
-        // is not safely cancellable.  If cancelled disable() must be called
+        // is not safely cancellable.  If cancelled, disable() must be called
         // to fully reset the peripheral before calling any other methods.
         usb.run_until_suspend().await;
 
