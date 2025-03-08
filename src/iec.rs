@@ -669,11 +669,12 @@ impl ProtocolDriver for IecDriver {
 // Implementations of write for the various supported protocols
 impl IecDriver {
     /// Implements standard Commodore IEC write support
+    #[allow(dead_code)]
     async fn cbm_write(
         &mut self,
-        len: u16,
+        _len: u16,
         _protocol: ProtocolType,
-        flags: ProtocolFlags,
+        _flags: ProtocolFlags,
     ) -> Result<u16, DriverError> {
         // TO DO
         Ok(0)
