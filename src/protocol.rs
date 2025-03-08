@@ -436,7 +436,7 @@ impl ProtocolHandler {
 
                 // Spawn the transfer
                 let spawner = Spawner::for_current_executor().await;
-                let result = spawner.spawn(raw_read_task(command.len));
+                let result = spawner.spawn(raw_read_task(command.protocol, command.len));
 
                 if let Err(e) = result {
                     // Failed to spawn the raw_read task - clear down.  Not

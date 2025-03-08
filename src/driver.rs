@@ -76,11 +76,12 @@ pub trait ProtocolDriver {
     ///
     /// # Arguments
     /// * `read` - The Read objects
+    /// * `protocol` - The protocol type
     /// * `write_ep` - The endpoint to write data to
     ///
     /// # Returns
     /// The number of bytes actually read or an error
-    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError>;
+    async fn raw_read(&mut self, protocol: ProtocolType, len: u16) -> Result<u16, DriverError>;
 
     /// Wait for a specific bus line to reach the desired state.
     ///
@@ -142,11 +143,11 @@ impl ProtocolDriver for Driver {
         }
     }
 
-    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError> {
+    async fn raw_read(&mut self, protocol: ProtocolType, len: u16) -> Result<u16, DriverError> {
         match self {
-            Driver::Iec(driver) => driver.raw_read(len).await,
-            Driver::Ieee(driver) => driver.raw_read(len).await,
-            Driver::Tape(driver) => driver.raw_read(len).await,
+            Driver::Iec(driver) => driver.raw_read(protocol, len).await,
+            Driver::Ieee(driver) => driver.raw_read(protocol, len).await,
+            Driver::Tape(driver) => driver.raw_read(protocol, len).await,
         }
     }
 
@@ -252,7 +253,7 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
 /// so that the spawner can be sure, once response is set, that this task is
 /// done, and hence the driver is unlocked.
 #[embassy_executor::task]
-pub async fn raw_read_task(len: u16) {
+pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
     debug!("Starting raw_read_task");
 
     let response = {
@@ -263,7 +264,7 @@ pub async fn raw_read_task(len: u16) {
             Some(guard) => {
                 // Call raw_read and set the response appropriately.
                 guard
-                    .raw_read(len)
+                    .raw_read(protocol, len)
                     .await
                     .map(|_| UsbTransferResponse::Ok)
                     .unwrap_or(UsbTransferResponse::Error)

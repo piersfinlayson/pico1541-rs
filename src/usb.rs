@@ -59,7 +59,7 @@ impl UsbStack {
     ///
     /// # Arguments
     /// - `usb` - The USB peripheral
-    /// - `iec_bus` - The IEC bus object
+    /// - `serial` - This device's USB serial number
     ///
     /// # Creates statics:
     /// - `USB` - The USB device
@@ -217,5 +217,13 @@ impl UsbStack {
 #[embassy_executor::task]
 pub async fn usb_task(usb: &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>>) -> ! {
     // Run the USB Device runner.
-    usb.run().await
+    loop {
+        // Run the USB stack until it suspends.  This is a blocking call and
+        // is not safely cancellable.  If cancelled disable() must be called
+        // to fully reset the peripheral before calling any other methods.
+        usb.run_until_suspend().await;
+
+        // Cancel-safe
+        usb.wait_resume().await;
+    }
 }

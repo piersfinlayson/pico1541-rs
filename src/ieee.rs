@@ -28,7 +28,7 @@ impl ProtocolDriver for IeeeDriver {
         unimplemented!()
     }
 
-    async fn raw_read(&mut self, len: u16) -> Result<u16, DriverError> {
+    async fn raw_read(&mut self, protocol: ProtocolType, len: u16) -> Result<u16, DriverError> {
         unimplemented!()
     }
 
