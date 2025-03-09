@@ -38,6 +38,7 @@ mod transfer;
 mod types;
 mod usb;
 mod watchdog;
+mod wifi;
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
@@ -52,6 +53,7 @@ use gpio::Gpio;
 use task::{core1_spawn, spawn_or_reboot};
 use usb::{usb_task, UsbStack};
 use watchdog::{watchdog_task, Watchdog};
+use wifi::{init_control, wifi_task, WiFi};
 
 // Statics
 //
@@ -132,6 +134,8 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
         FLASH: p_flash,
         DMA_CH0: p_dma_ch0,
         CORE1: p_core1,
+        ADC: p_adc,
+        PIO0: p_pio0,
         ..
     } = p;
 
@@ -140,9 +144,6 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     let mut p_dma_ch0 = p_dma_ch0;
     let (log_serial, usb_serial) = get_serial(&mut p_flash, &mut p_dma_ch0);
 
-    // Log the information about this firmware build.
-    built::log_fw_info(bin_name, log_serial);
-
     // Create the Gpio object, which manages the pins
     Gpio::create_static(
         pin_0, pin_1, pin_2, pin_3, pin_4, pin_5, pin_6, pin_7, pin_8, pin_9, pin_10, pin_11,
@@ -150,6 +151,24 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
         pin_23, pin_24, pin_25, pin_26, pin_27, pin_28, pin_29, None,
     )
     .await;
+
+    // Initialize WiFi.  We do this very early, because this will set up a
+    // static, IS_WIFI, indicating whether WiFi is supported.  This will be
+    // logged.  We do this after Gpio because WiFi gets an ADC pin from Gpio.
+    let wifi = WiFi::create_static(p_adc, p_pio0, p_dma_ch0).await;
+    let wifi_control = match wifi.init().await {
+        Some((mut control, runner)) => {
+            // Spawn the WiFi task.
+            spawn_or_reboot(spawner.spawn(wifi_task(runner)), "WiFi Control");
+
+            init_control(&mut control).await;
+            Some(control)
+        }
+        None => None,
+    };
+
+    // Log the information about this firmware build.
+    built::log_fw_info(bin_name, log_serial);
 
     // Set up the watchdog - stores it in the WATCHDOG static.  We do this
     // before we create any tasks (as they might try and access the static
@@ -160,7 +179,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // once they are created they may try to update the status display.
     // However, it must be done after the GPIO static is created, as it needs
     // to retrieve the appropriate pin.
-    spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
+    spawn_or_reboot(spawner.spawn(status_task(wifi_control)), "Status Display");
 
     // Create the USB stack and the Bulk object.  We do this at the same time
     // because Bulk needs the endpoints from the USB Stack creation.

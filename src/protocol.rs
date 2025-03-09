@@ -20,8 +20,8 @@ use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointIn;
 
 use crate::constants::{
-    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_GPIO_PINS, MAX_WRITE_SIZE_USIZE,
-    PROTOCOL_LOOP_TIMER, PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE,
+    LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_WRITE_SIZE_USIZE, PROTOCOL_LOOP_TIMER,
+    PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE, TOTAL_GENERIC_GPIOS,
     USB_DATA_TRANSFER_WAIT_TIMER,
 };
 use crate::display::{update_status, DisplayType};
@@ -116,7 +116,7 @@ pub struct ProtocolHandler {
     ieee_pins: IeeePinConfig,
 
     // The GPIOs.
-    gpios: [Option<Flex<'static>>; MAX_GPIO_PINS as usize],
+    gpios: [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS as usize],
 }
 
 impl ProtocolHandler {
@@ -141,7 +141,7 @@ impl ProtocolHandler {
 
     // Get the GPIOs that all bus types require from the GPIO object.
     async fn get_gpios() -> (
-        [Option<Flex<'static>>; MAX_GPIO_PINS as usize],
+        [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS as usize],
         IecPinConfig,
         IeeePinConfig,
     ) {
@@ -154,7 +154,7 @@ impl ProtocolHandler {
         let ieee_pins = gpio.get_ieee_pins();
 
         // Create an array of Option<AnyPin> to hold the GPIOs we get.
-        let mut gpios: [Option<Flex<'static>>; MAX_GPIO_PINS as usize] = Default::default();
+        let mut gpios: [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS as usize] = Default::default();
 
         // Get the pins, accepting that if we've already got the pin, we don't
         // need to (and can't) get it again.

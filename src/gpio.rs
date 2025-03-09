@@ -7,10 +7,10 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use crate::constants::{INVALID_GPIO_PINS, MAX_GPIO_PINS};
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::gpio::{AnyPin, Flex, Pin};
+use embassy_rp::gpio::{AnyPin, Flex};
+use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{
     PIN_0, PIN_1, PIN_10, PIN_11, PIN_12, PIN_13, PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PIN_19,
     PIN_2, PIN_20, PIN_21, PIN_22, PIN_23, PIN_24, PIN_25, PIN_26, PIN_27, PIN_28, PIN_29, PIN_3,
@@ -23,6 +23,7 @@ use embassy_sync::mutex::Mutex;
 // Statics
 //
 
+// Static Gpio object
 pub static GPIO: Mutex<CriticalSectionRawMutex, Option<Gpio>> = Mutex::new(None);
 
 /// GPIO configurations for different device types
@@ -39,6 +40,7 @@ pub mod config {
             status_display_pin: 25,
             iec_pins: iec_prototype(),
             ieee_pins: ieee_prototype(),
+            wifi_pins: Some(wifi_config()),
         }
     }
 
@@ -48,6 +50,7 @@ pub mod config {
             status_display_pin: 25,
             iec_pins: iec_pico1541_v0_1(),
             ieee_pins: ieee_pico1541_v0_1(),
+            wifi_pins: Some(wifi_config()),
         }
     }
 
@@ -57,6 +60,7 @@ pub mod config {
             status_display_pin: 0,
             iec_pins: iec_prototype(),
             ieee_pins: ieee_prototype(),
+            wifi_pins: Some(wifi_config()),
         }
     }
 
@@ -66,6 +70,7 @@ pub mod config {
             status_display_pin: 0,
             iec_pins: iec_pico1541_v0_1(),
             ieee_pins: ieee_pico1541_v0_1(),
+            wifi_pins: Some(wifi_config()),
         }
     }
 
@@ -134,6 +139,15 @@ pub mod config {
             d_io: [2, 3, 4, 5, 9, 8, 7, 6],
         }
     }
+
+    fn wifi_config() -> WiFiPinConfig {
+        WiFiPinConfig {
+            pwr: 23,
+            cs: 25,
+            dio: 24,
+            clk: 29,
+        }
+    }
 }
 
 /// Pin configuration for different device types
@@ -141,6 +155,7 @@ pub struct PinConfig {
     pub status_display_pin: u8,
     pub iec_pins: IecPinConfig,
     pub ieee_pins: IeeePinConfig,
+    pub wifi_pins: Option<WiFiPinConfig>,
 }
 
 /// IEC Bus pin configuration
@@ -224,6 +239,14 @@ impl IntoIterator for IeeePinConfig {
     }
 }
 
+#[derive(Clone)]
+pub struct WiFiPinConfig {
+    pub pwr: u8,
+    pub cs: u8,
+    pub dio: u8,
+    pub clk: u8,
+}
+
 /// Default pin configuration
 impl Default for PinConfig {
     fn default() -> Self {
@@ -255,7 +278,36 @@ impl Default for PinConfig {
 
 /// Object which provides methods to create objects that require GPIO pins.
 pub struct Gpio {
-    pins: [Option<AnyPin>; MAX_GPIO_PINS as usize],
+    pin0: Option<PIN_0>,
+    pin1: Option<PIN_1>,
+    pin2: Option<PIN_2>,
+    pin3: Option<PIN_3>,
+    pin4: Option<PIN_4>,
+    pin5: Option<PIN_5>,
+    pin6: Option<PIN_6>,
+    pin7: Option<PIN_7>,
+    pin8: Option<PIN_8>,
+    pin9: Option<PIN_9>,
+    pin10: Option<PIN_10>,
+    pin11: Option<PIN_11>,
+    pin12: Option<PIN_12>,
+    pin13: Option<PIN_13>,
+    pin14: Option<PIN_14>,
+    pin15: Option<PIN_15>,
+    pin16: Option<PIN_16>,
+    pin17: Option<PIN_17>,
+    pin18: Option<PIN_18>,
+    pin19: Option<PIN_19>,
+    pin20: Option<PIN_20>,
+    pin21: Option<PIN_21>,
+    pin22: Option<PIN_22>,
+    pin23: Option<PIN_23>,
+    pin24: Option<PIN_24>,
+    pin25: Option<PIN_25>,
+    pin26: Option<PIN_26>,
+    pin27: Option<PIN_27>,
+    pin28: Option<PIN_28>,
+    pin29: Option<PIN_29>,
     config: PinConfig,
 }
 
@@ -297,48 +349,37 @@ impl Gpio {
     ) {
         let config = config.unwrap_or_default();
 
-        // Convert all pins to AnyPin and place in array
-        let mut pins_array = [
-            Some(pin0.degrade()),
-            Some(pin1.degrade()),
-            Some(pin2.degrade()),
-            Some(pin3.degrade()),
-            Some(pin4.degrade()),
-            Some(pin5.degrade()),
-            Some(pin6.degrade()),
-            Some(pin7.degrade()),
-            Some(pin8.degrade()),
-            Some(pin9.degrade()),
-            Some(pin10.degrade()),
-            Some(pin11.degrade()),
-            Some(pin12.degrade()),
-            Some(pin13.degrade()),
-            Some(pin14.degrade()),
-            Some(pin15.degrade()),
-            Some(pin16.degrade()),
-            Some(pin17.degrade()),
-            Some(pin18.degrade()),
-            Some(pin19.degrade()),
-            Some(pin20.degrade()),
-            Some(pin21.degrade()),
-            Some(pin22.degrade()),
-            Some(pin23.degrade()),
-            Some(pin24.degrade()),
-            Some(pin25.degrade()),
-            Some(pin26.degrade()),
-            Some(pin27.degrade()),
-            Some(pin28.degrade()),
-            Some(pin29.degrade()),
-        ];
-
-        // Go through the pins and throw away any that are invalid
-        // (unassignable).
-        for pin in INVALID_GPIO_PINS.iter() {
-            pins_array[*pin as usize] = None;
-        }
-
         let gpio = Self {
-            pins: pins_array,
+            pin0: Some(pin0),
+            pin1: Some(pin1),
+            pin2: Some(pin2),
+            pin3: Some(pin3),
+            pin4: Some(pin4),
+            pin5: Some(pin5),
+            pin6: Some(pin6),
+            pin7: Some(pin7),
+            pin8: Some(pin8),
+            pin9: Some(pin9),
+            pin10: Some(pin10),
+            pin11: Some(pin11),
+            pin12: Some(pin12),
+            pin13: Some(pin13),
+            pin14: Some(pin14),
+            pin15: Some(pin15),
+            pin16: Some(pin16),
+            pin17: Some(pin17),
+            pin18: Some(pin18),
+            pin19: Some(pin19),
+            pin20: Some(pin20),
+            pin21: Some(pin21),
+            pin22: Some(pin22),
+            pin23: Some(pin23),
+            pin24: Some(pin24),
+            pin25: Some(pin25),
+            pin26: Some(pin26),
+            pin27: Some(pin27),
+            pin28: Some(pin28),
+            pin29: Some(pin29),
             config,
         };
 
@@ -355,7 +396,7 @@ impl Gpio {
 
     /// Get the pin used for the status display.
     pub fn get_status_display_pin(&mut self) -> AnyPin {
-        match self.take_pin(self.config.status_display_pin) {
+        match self.take_pin_as_any(self.config.status_display_pin) {
             Some(pin) => pin,
             None => panic!(
                 "Status display pin {} already taken",
@@ -374,12 +415,210 @@ impl Gpio {
         self.config.ieee_pins.clone()
     }
 
+    /// Get the WiFi pins
+    pub fn get_wifi_pins(&self) -> Option<WiFiPinConfig> {
+        match &self.config.wifi_pins {
+            Some(pins) => Some(pins.clone()),
+            None => None,
+        }
+    }
+
     pub fn take_flex_pin(&mut self, index: u8) -> Option<Flex<'static>> {
-        self.take_pin(index).map(Flex::new)
+        self.take_pin_as_any(index).map(Flex::new)
+    }
+
+    pub fn take_output(&mut self, index: u8, level: Level) -> Option<Output<'static>> {
+        self.take_pin_as_any(index)
+            .map(|pin| Output::new(pin, level))
     }
 
     /// Helper to take a pin by index
-    fn take_pin(&mut self, index: u8) -> Option<AnyPin> {
-        self.pins[index as usize].take()
+    fn take_pin_as_any(&mut self, index: u8) -> Option<AnyPin> {
+        match index {
+            0 => self.pin0.take().map(AnyPin::from),
+            1 => self.pin1.take().map(AnyPin::from),
+            2 => self.pin2.take().map(AnyPin::from),
+            3 => self.pin3.take().map(AnyPin::from),
+            4 => self.pin4.take().map(AnyPin::from),
+            5 => self.pin5.take().map(AnyPin::from),
+            6 => self.pin6.take().map(AnyPin::from),
+            7 => self.pin7.take().map(AnyPin::from),
+            8 => self.pin8.take().map(AnyPin::from),
+            9 => self.pin9.take().map(AnyPin::from),
+            10 => self.pin10.take().map(AnyPin::from),
+            11 => self.pin11.take().map(AnyPin::from),
+            12 => self.pin12.take().map(AnyPin::from),
+            13 => self.pin13.take().map(AnyPin::from),
+            14 => self.pin14.take().map(AnyPin::from),
+            15 => self.pin15.take().map(AnyPin::from),
+            16 => self.pin16.take().map(AnyPin::from),
+            17 => self.pin17.take().map(AnyPin::from),
+            18 => self.pin18.take().map(AnyPin::from),
+            19 => self.pin19.take().map(AnyPin::from),
+            20 => self.pin20.take().map(AnyPin::from),
+            21 => self.pin21.take().map(AnyPin::from),
+            22 => self.pin22.take().map(AnyPin::from),
+            23 => self.pin23.take().map(AnyPin::from),
+            24 => self.pin24.take().map(AnyPin::from),
+            25 => self.pin25.take().map(AnyPin::from),
+            26 => self.pin26.take().map(AnyPin::from),
+            27 => self.pin27.take().map(AnyPin::from),
+            28 => self.pin28.take().map(AnyPin::from),
+            29 => self.pin29.take().map(AnyPin::from),
+            _ => {
+                warn!("Attempt to take non-existant pin");
+                None
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin0(&mut self) -> Option<PIN_0> {
+        self.pin0.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin1(&mut self) -> Option<PIN_1> {
+        self.pin1.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin2(&mut self) -> Option<PIN_2> {
+        self.pin2.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin3(&mut self) -> Option<PIN_3> {
+        self.pin3.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin4(&mut self) -> Option<PIN_4> {
+        self.pin4.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin5(&mut self) -> Option<PIN_5> {
+        self.pin5.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin6(&mut self) -> Option<PIN_6> {
+        self.pin6.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin7(&mut self) -> Option<PIN_7> {
+        self.pin7.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin8(&mut self) -> Option<PIN_8> {
+        self.pin8.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin9(&mut self) -> Option<PIN_9> {
+        self.pin9.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin10(&mut self) -> Option<PIN_10> {
+        self.pin10.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin11(&mut self) -> Option<PIN_11> {
+        self.pin11.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin12(&mut self) -> Option<PIN_12> {
+        self.pin12.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin13(&mut self) -> Option<PIN_13> {
+        self.pin13.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin14(&mut self) -> Option<PIN_14> {
+        self.pin14.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin15(&mut self) -> Option<PIN_15> {
+        self.pin15.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin16(&mut self) -> Option<PIN_16> {
+        self.pin16.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin17(&mut self) -> Option<PIN_17> {
+        self.pin17.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin18(&mut self) -> Option<PIN_18> {
+        self.pin18.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin19(&mut self) -> Option<PIN_19> {
+        self.pin19.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin20(&mut self) -> Option<PIN_20> {
+        self.pin20.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin21(&mut self) -> Option<PIN_21> {
+        self.pin21.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin22(&mut self) -> Option<PIN_22> {
+        self.pin22.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin23(&mut self) -> Option<PIN_23> {
+        self.pin23.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin24(&mut self) -> Option<PIN_24> {
+        self.pin24.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin25(&mut self) -> Option<PIN_25> {
+        self.pin25.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin26(&mut self) -> Option<PIN_26> {
+        self.pin26.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin27(&mut self) -> Option<PIN_27> {
+        self.pin27.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin28(&mut self) -> Option<PIN_28> {
+        self.pin28.take()
+    }
+
+    #[allow(dead_code)]
+    pub fn take_pin29(&mut self) -> Option<PIN_29> {
+        self.pin29.take()
     }
 }

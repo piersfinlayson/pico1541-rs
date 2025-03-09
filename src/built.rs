@@ -6,8 +6,11 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+use core::sync::atomic::Ordering;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
+
+use crate::wifi::IS_WIFI;
 
 // Import the build-time information from the `built.rs` output file generated
 // during the build process by `build.rs`.
@@ -33,6 +36,7 @@ pub fn log_fw_info(bin_name: &str, serial: &str) {
     info!("{} operating in {} mode", built_info::PKG_NAME, bin_name);
     info!("Author: {}", built_info::PKG_AUTHORS);
     info!("pico1541 Version: {}", built_info::PKG_VERSION);
+    info!("WiFi support: {}", IS_WIFI.load(Ordering::Relaxed));
     #[cfg(feature = "compatibility")]
     info!(
         "xum1541 Version: {}",

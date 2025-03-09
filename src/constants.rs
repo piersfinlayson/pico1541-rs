@@ -163,8 +163,6 @@ pub const CORE1_STACK_SIZE: usize = 4096;
 // outstanding
 pub const READ_DATA_CHANNEL_SIZE: usize = 1;
 
-/// Maximum number of GPIOs supported by the device
-pub const MAX_GPIO_PINS: u8 = 30;
-
-/// Invalid (unassignable) GPIOs
-pub const INVALID_GPIO_PINS: [u8; 3] = [23, 24, 29];
+// Total number of "generic" GPIOs - those which are exposed from the Pico
+// externally, for general purposes, not including WiFi or ADC pins.
+pub const TOTAL_GENERIC_GPIOS: usize = 23; // 0-22 inclusive

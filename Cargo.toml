@@ -56,6 +56,7 @@ embassy-usb = { version = "0.4", features = ["defmt"] }
 embassy-futures = { version = "0.1" }
 embassy-sync = { version = "0.6", features = ["defmt"] }
 embassy-time = { version = "0.4", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-embedded-hal = { version = "0.3" }
 
 # Required for StaticCell and ConstStaticCell
 static_cell = { version = "2.1" }
