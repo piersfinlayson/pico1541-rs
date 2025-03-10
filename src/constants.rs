@@ -30,6 +30,9 @@ pub const PROTOCOL_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 /// How often the status display must feed the watchdog to prevent a reset.
 pub const STATUS_DISPLAY_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 
+/// How often the WiFi Control task must feed the watchdog to prevent a reset.
+pub const WIFI_CONTROL_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
+
 //
 // Task main runner and related timers.
 //
@@ -58,6 +61,9 @@ pub const PROTOCOL_LOOP_TIMER: Duration = Duration::from_micros(10);
 /// the USB data transfer object.  This is as low as we an make it, because
 /// we're handling individual bytes.
 pub const USB_DATA_TRANSFER_WAIT_TIMER: Duration = Duration::from_micros(1);
+
+// How long the WiFi Control task will wait before feeding the watchdog.
+pub const WIFI_CONTROL_WAIT_TIMER: Duration = Duration::from_millis(100);
 
 //
 // USB device configuration constants.

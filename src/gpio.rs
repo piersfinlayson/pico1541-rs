@@ -417,10 +417,7 @@ impl Gpio {
 
     /// Get the WiFi pins
     pub fn get_wifi_pins(&self) -> Option<WiFiPinConfig> {
-        match &self.config.wifi_pins {
-            Some(pins) => Some(pins.clone()),
-            None => None,
-        }
+        self.config.wifi_pins.clone()
     }
 
     pub fn take_flex_pin(&mut self, index: u8) -> Option<Flex<'static>> {

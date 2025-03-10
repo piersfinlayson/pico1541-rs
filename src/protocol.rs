@@ -116,7 +116,7 @@ pub struct ProtocolHandler {
     ieee_pins: IeeePinConfig,
 
     // The GPIOs.
-    gpios: [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS as usize],
+    gpios: [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS],
 }
 
 impl ProtocolHandler {
@@ -141,7 +141,7 @@ impl ProtocolHandler {
 
     // Get the GPIOs that all bus types require from the GPIO object.
     async fn get_gpios() -> (
-        [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS as usize],
+        [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS],
         IecPinConfig,
         IeeePinConfig,
     ) {
@@ -154,7 +154,7 @@ impl ProtocolHandler {
         let ieee_pins = gpio.get_ieee_pins();
 
         // Create an array of Option<AnyPin> to hold the GPIOs we get.
-        let mut gpios: [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS as usize] = Default::default();
+        let mut gpios: [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS] = Default::default();
 
         // Get the pins, accepting that if we've already got the pin, we don't
         // need to (and can't) get it again.
@@ -416,6 +416,7 @@ impl ProtocolHandler {
                         value: 0,
                     })
                     .await;
+                    update_status(DisplayType::Error);
                 }
             }
 
@@ -443,6 +444,7 @@ impl ProtocolHandler {
                     // allowed to send a response.
                     warn!("Failed to spawn raw_read task {}", e);
                     UsbDataTransfer::lock_clear().await;
+                    update_status(DisplayType::Error);
                 }
             }
 
@@ -526,6 +528,7 @@ impl ProtocolHandler {
             // The rest are unsupported - just drop
             _ => {
                 warn!("Unsupported command: {}", command.command);
+                update_status(DisplayType::Error);
             }
         }
     }
@@ -553,7 +556,7 @@ impl ProtocolHandler {
     async fn initialize(&mut self) {
         info!("Protocol Handler - initialized");
         self.state = ProtocolState::Initialized;
-        update_status(DisplayType::Ready);
+        update_status(DisplayType::Active);
         UsbDataTransfer::lock_clear().await;
 
         let _ = self.try_init_driver();
@@ -563,7 +566,7 @@ impl ProtocolHandler {
     async fn uninitialize(&mut self) {
         info!("Protocol Handler - uninitialized");
         self.state = ProtocolState::Uninitialized;
-        update_status(DisplayType::Init);
+        update_status(DisplayType::Ready);
         UsbDataTransfer::lock_clear().await;
     }
 

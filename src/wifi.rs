@@ -1,4 +1,23 @@
 //! This module handles WiFi support for the pico1541.
+//!
+//! As well as actually running the WiFi stack, this module also detects
+//! whether the board we are running on supports WiFi and, if so, provides
+//! a capability to control the WiFi GPIO 0 (which on a Pico W/Pico 2 W is
+//! connected to the onboard LED).  That is done via the WIFI_GPIO_0 Signal
+//! static.
+//!
+//! StatusDisplay also needs to know whether to use the standard LED GPIO (25)
+//! or the WiFi GPIO.  It does this, by querying the IS_WIFI AtomicBool
+//! static.
+//!
+//! Both these statics are owned and initialized by this module:
+//! - IS_WIFI is set up by WiFi::create_static()
+//! - WIFI_GPIO_0 is set up at start of day, but will only be acted upon once
+//!   spawn_wifi() has been called.
+//!
+//! There is no issue w
+//!
+//!
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -17,11 +36,15 @@ use embassy_rp::peripherals::{ADC, DMA_CH0, PIN_29, PIO0};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
+use embassy_time::with_timeout;
 use static_assertions::const_assert;
 use static_cell::StaticCell;
 
+use crate::constants::{WIFI_CONTROL_WAIT_TIMER, WIFI_CONTROL_WATCHDOG_TIMER};
 use crate::gpio::GPIO;
 use crate::task::spawn_or_reboot;
+use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
 //
 // Statics
@@ -32,15 +55,15 @@ use crate::task::spawn_or_reboot;
 // easier and quicker (in case WiFi is locked by something else).
 pub static IS_WIFI: AtomicBool = AtomicBool::new(false);
 
+// Signal for StatusDisplay to update the WiFi GPIO 0.
+pub static WIFI_GPIO_0: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+
 // Static WiFI object.  Cannot wrap in a Mutex because the cyw43 WiFi objects
 // are not Send.
-pub static WIFI: StaticCell<WiFi> = StaticCell::new();
+static WIFI: StaticCell<WiFi> = StaticCell::new();
 
-// Static for WiFi state which needs to be static for liftime reasons.
+// Static for WiFi state which needs to be static so it outlives cyw43.
 static WIFI_STATE: StaticCell<cyw43::State> = StaticCell::new();
-
-// Static for WiFi control
-static WIFI_CONTROL: StaticCell<Control> = StaticCell::new();
 
 // Required to use the ADC.
 bind_interrupts!(struct AdcIrqs {
@@ -99,6 +122,8 @@ impl WiFi {
         // Detect whether WiFi is supported.
         wifi.detect().await;
 
+        // Store the WiFi object in the static and return mutable reference to
+        // it.
         WIFI.init(wifi)
     }
 
@@ -112,15 +137,16 @@ impl WiFi {
     // This is documented in "Conecting to the Internet with Pico W", section 2.4
     // "Which hardware am I running on?".
     // https://datasheets.raspberrypi.com/picow/connecting-to-the-internet-with-pico-w.pdf
-    pub async fn detect(&mut self) {
-        // Create the ADC object.
+    async fn detect(&mut self) {
+        // Create the ADC object, which we need to test the voltage on pin 29.
         self.adc = Some(Adc::new(
             self.p_adc.take().expect("ADC peripheral not present"),
             AdcIrqs,
             Config::default(),
         ));
 
-        // Figure out if WiFi supported.
+        // Figure out if WiFi supported.  This code reads the voltage on pin
+        // 29 and sets the IS_WIFI static accordingly.
         let mut adc_pin = self.adc_pin.take().expect("Pin 29/ADC pin 3 not present");
         let mut channel = Channel::new_pin(&mut adc_pin, Pull::None);
         let raw_value: u16 = self
@@ -136,26 +162,33 @@ impl WiFi {
         IS_WIFI.store(self.wifi_supported, Ordering::Release);
         drop(channel);
 
-        // Replace the ADC pin - we'll need it again later to start the WiFi
-        // stack.
+        // Replace the ADC pin back in WiFi, as we'll need it again later to
+        // initialize the WiFi stack.
         self.adc_pin.replace(adc_pin);
     }
 
-    /// Initialize the WiFi object.
+    /// Initialize the WiFi object.  Must be called before calling
+    /// spawn_wifi() to start the WiFi tasks.
+    ///
+    /// This function returns an Option<tuple>, with the tuple contaning
+    /// arguments required by the spawn_wifi() function.  None is returned
+    /// is this device doesn't support WiFi (i.e. a non-W variant of the
+    /// Pico).
     pub async fn init(
         &mut self,
     ) -> Option<(
-        &'static mut Control<'static>,
+        Control<'static>,
         Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
     )> {
-        // No-op if WiFi isn't supported.
+        // Check if WiFi isn't supported.  This is set up in
+        // WiFi::create_static() so must be valid here.
         if !self.wifi_supported {
             return None;
         }
 
         // Locking section
         let (pwr_pin, cs_pin, dio_pin, clk_pin) = {
-            // Lock GPIO
+            // Lock GPIO, so we can retrieve the pins we need.
             let mut guard = GPIO.lock().await;
             let guard = guard.as_mut().expect("GPIO object not initialized");
 
@@ -171,7 +204,8 @@ impl WiFi {
                 }
             };
 
-            // Set up the power and chip select pins
+            // Set up the power and chip select pins as output with the
+            // correct initial values.
             let pwr_pin = guard
                 .take_output(wifi_config.pwr, Level::Low)
                 .expect("Failed to take WiFi power pin");
@@ -180,7 +214,10 @@ impl WiFi {
                 .take_output(wifi_config.cs, Level::High)
                 .expect("Failed to take WiFi CS pin");
 
-            // Get the DIO and CLK pins
+            // Get the DIO and CLK pins.  These must be passed into the WiFi
+            // object as the pin types themselves, rather than generic Flex,
+            // AnyPin or other types, so the WiFi code knows these support the
+            // required SPI capabilities.
             assert!(wifi_config.dio == 24);
             assert!(wifi_config.clk == 29);
             let doi_pin = guard.take_pin24().expect("Failed to get DIO pin");
@@ -189,13 +226,14 @@ impl WiFi {
             (pwr_pin, cs_pin, doi_pin, clk_pin)
         };
 
-        // Set up the required PIO
+        // Set up the PIO required by the WiFi stack.
         let mut pio = Pio::new(
             self.p_pio0.take().expect("PIO0 peripheral not present"),
             PioIrqs,
         );
 
-        // Create the SPI object
+        // Create the SPI object required by the WiFi stack.  This is used to
+        // communicate with the cyw43 IC.
         let spi = PioSpi::new(
             &mut pio.common,
             pio.sm0,
@@ -207,7 +245,10 @@ impl WiFi {
             self.dma_ch0.take().expect("DMA_CH0 peripheral not present"),
         );
 
-        // Get the WiFi firmware
+        // Get the WiFi firmware.  There are other options here - the firmware
+        // doesn't not need to built into our application binary, but it does
+        // need to be written somewhere to the Pico flash, and then loaded so
+        // it can be passed into the cy43 IC.
         let fw = include_bytes!("../firmware/cyw43/43439A0.bin");
 
         // Create the WiFi stack.
@@ -215,28 +256,80 @@ impl WiFi {
         let (_net_device, control, runner) = cyw43::new(state, pwr_pin, spi, fw).await;
 
         // Store the control and runner objects.
-        Some((WIFI_CONTROL.init(control), runner))
+        Some((control, runner))
     }
 }
 
-pub async fn init_control(control: &mut Control<'_>) {
+/// Helper to spawn all required WiFi tasks, on the same core as this
+/// function is called from:
+/// - The cyw43 WiFi stack
+/// - The WiFi control task
+pub async fn spawn_wifi(
+    spawner: &Spawner,
+    wifi_args: (
+        Control<'static>,
+        Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+    ),
+) {
+    // Break out the arguments
+    let (mut control, runner) = wifi_args;
+
+    // Spawn the WiFi task.
+    spawn_or_reboot(spawner.spawn(cyw43_task(runner)), "cyw43 WiFi");
+
+    // Now the WiFi task is spwaned, initialize the WiFi control object..
+    init_control(&mut control).await;
+
+    // Spawn the control task.
+    spawn_or_reboot(spawner.spawn(wifi_control_task(control)), "WiFi Control");
+}
+
+/// Method to run the WiFi stack.
+#[embassy_executor::task]
+pub async fn cyw43_task(
+    runner: Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+) -> ! {
+    // Run the cyw43 runner.  I believe this isn't cancel safe, so we can't
+    // run it in a loop, with periodic watchdog feedings - hence this task
+    // isn't watchdog policed.
+    runner.run().await
+}
+
+/// Method to run the WiFi control task
+#[embassy_executor::task]
+pub async fn wifi_control_task(mut control: Control<'static>) -> ! {
+    // Register with the watchdog
+    register_task(TaskId::WiFiControl, WIFI_CONTROL_WATCHDOG_TIMER);
+
+    loop {
+        // Feed the watchdog.
+        feed_watchdog(TaskId::WiFiControl);
+
+        // Wait for the signal to update the WiFi GPIO 0.
+        if let Ok(state) = with_timeout(WIFI_CONTROL_WAIT_TIMER, WIFI_GPIO_0.wait()).await {
+            // wait() returned, so the Signal was signalled.
+            debug!("Set WiFi GPIO 0 state to {}", state);
+            control.gpio_set(0, state).await;
+        }
+
+        // Go around the loop again, immediately feeding the watchdog,
+        // whatever response we got from with_timeout().
+    }
+}
+
+/// Helper function to retrieve whether WiFi is supported.
+///
+/// The response is valid once WiFi::create_static() has returned.
+pub fn is_wifi_supported() -> bool {
+    IS_WIFI.load(Ordering::Relaxed)
+}
+
+// Initializes WiFI control, we can subsequently use it to control the WiFi
+// stack.
+async fn init_control(control: &mut Control<'_>) {
     let clm = include_bytes!("../firmware/cyw43/43439A0_clm.bin");
     control.init(clm).await;
     control
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
-}
-
-/// Method to run the WiFi stack
-#[embassy_executor::task]
-pub async fn wifi_task(
-    runner: Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
-) -> ! {
-    // Run the cyw43 runner
-    runner.run().await
-}
-
-/// Helper function to easily retrieve whether WiFi is supported.
-pub fn is_wifi_supported() -> bool {
-    IS_WIFI.load(Ordering::Relaxed)
 }

@@ -4,7 +4,6 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use cyw43::Control;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Level, Output};
@@ -17,7 +16,7 @@ use crate::constants::{
 };
 use crate::gpio::GPIO;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
-use crate::wifi::is_wifi_supported;
+use crate::wifi::{is_wifi_supported, WIFI_GPIO_0};
 
 // The STATUS_DISPLAY static is used to signal to the StatusDisplay object
 // that it needs to update the LED state.
@@ -53,16 +52,13 @@ pub struct StatusDisplay {
 
     /// Current LED state (on or off)
     led_state: bool,
-
-    /// WiFi control object
-    control: Option<&'static mut Control<'static>>,
 }
 
 impl StatusDisplay {
     /// Creates a new StatusDisplay with the specified LED pin..
     ///
     /// The LED is initially turned on (Init state)
-    pub async fn new(control: Option<&'static mut Control<'static>>) -> Self {
+    pub async fn new() -> Self {
         // Does this board support WiFi?
         let wifi = is_wifi_supported();
 
@@ -74,13 +70,12 @@ impl StatusDisplay {
             None
         };
 
-        // Create the display with the LED on
+        // Create the display with the LED off
         Self {
             led,
             current_status: DisplayType::Init,
             last_toggle: Instant::now(),
-            led_state: true,
-            control,
+            led_state: false,
         }
     }
 
@@ -100,25 +95,23 @@ impl StatusDisplay {
     // Turns the appropriate LED on
     async fn led_on(&mut self) {
         if let Some(led) = self.led.as_mut() {
+            debug!("Turning LED on via GPIO 25");
             led.set_high();
-            self.led_state = false;
-        } else if let Some(control) = self.control.as_mut() {
-            control.gpio_set(0, true).await;
         } else {
-            warn!("Can't set LED on, no LED object");
+            debug!("Turning LED on via WiFi GPIO 0");
+            WIFI_GPIO_0.signal(true);
         }
+        self.led_state = true;
     }
 
     // Turns the appropriate LED off
     async fn led_off(&mut self) {
         if let Some(led) = self.led.as_mut() {
             led.set_low();
-            self.led_state = true;
-        } else if let Some(control) = self.control.as_mut() {
-            control.gpio_set(0, false).await;
         } else {
-            warn!("Can't set LED on, no LED object");
+            WIFI_GPIO_0.signal(false);
         }
+        self.led_state = false;
     }
 
     /// Update the current status
@@ -137,7 +130,6 @@ impl StatusDisplay {
                 }
                 DisplayType::Ready => {
                     self.led_off().await;
-                    self.led_state = false;
                 }
                 // For Active and Error states, we'll handle the toggling
                 // in do_work()
@@ -218,13 +210,13 @@ impl StatusDisplay {
 /// Runs the status display task.
 /// This is an embassy executor task that periodically calls do_work()
 #[embassy_executor::task]
-pub async fn status_task(wifi_control: Option<&'static mut Control<'static>>) -> ! {
+pub async fn status_task() -> ! {
     // Get the core number, in order to log it.
     let core = embassy_rp::pac::SIO.cpuid().read();
     info!("Core{}: Status display task started", core);
 
     // Create the status display object
-    let mut display = StatusDisplay::new(wifi_control).await;
+    let mut display = StatusDisplay::new().await;
 
     // Register with the watchdog
     register_task(TaskId::Display, STATUS_DISPLAY_WATCHDOG_TIMER);

@@ -139,6 +139,10 @@ pub enum TaskId {
     /// The StatusDisplay
     Display,
 
+    /// The WiFi Control task.  The cyw43 WiFi task can't be policed by a
+    /// watchdog, as the WiFI runner() doesn't return
+    WiFiControl,
+
     // We cannot police USB as it needs to run permanently.  The same goes
     // for the Bulk task - it calls the IN endpoint read().  Technically
     // we probably could cancel it to feed the watchdog, but we will trust

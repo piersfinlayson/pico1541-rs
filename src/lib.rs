@@ -53,7 +53,7 @@ use gpio::Gpio;
 use task::{core1_spawn, spawn_or_reboot};
 use usb::{usb_task, UsbStack};
 use watchdog::{watchdog_task, Watchdog};
-use wifi::{init_control, wifi_task, WiFi};
+use wifi::{spawn_wifi, WiFi};
 
 // Statics
 //
@@ -152,22 +152,19 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     )
     .await;
 
-    // Initialize WiFi.  We do this very early, because this will set up a
-    // static, IS_WIFI, indicating whether WiFi is supported.  This will be
-    // logged.  We do this after Gpio because WiFi gets an ADC pin from Gpio.
+    // Initialize WiFi.  At this stage, we don't know if we're running on a
+    // Pico or Pico W, so we create the IS_WIFI static, which our code can
+    // then test whether we are running on a WiFi device.  We do that in the
+    // log_fw_info() function, and also in StatusDisplay (to decide whether to
+    // use pin 25 or WiFi GPIO 0 to access the status LED).
+    //
+    // Note that we have to create WiFi after the Gpio object, as WiFi needs
+    // ADC pin (29) to do its capability detection.
     let wifi = WiFi::create_static(p_adc, p_pio0, p_dma_ch0).await;
-    let wifi_control = match wifi.init().await {
-        Some((mut control, runner)) => {
-            // Spawn the WiFi task.
-            spawn_or_reboot(spawner.spawn(wifi_task(runner)), "WiFi Control");
 
-            init_control(&mut control).await;
-            Some(control)
-        }
-        None => None,
-    };
-
-    // Log the information about this firmware build.
+    // Log the information about this firmware build.  We do this before
+    // initializing WiFi so it's done as early as possible (and initializing
+    // WiFi involves writing some firmware to the WiFi chip).
     built::log_fw_info(bin_name, log_serial);
 
     // Set up the watchdog - stores it in the WATCHDOG static.  We do this
@@ -175,11 +172,18 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // once that's happened, in order to feed it).
     Watchdog::create_static(p_watchdog);
 
+    // Now attempt to initialize WiFi and spawm the WiFi tasks.  If this
+    // hardware doesn't support WiFi, WiFi::init() will return None, so we
+    // won't spawn the WiFi tasks.
+    if let Some(wifi_args) = wifi.init().await {
+        spawn_wifi(&spawner, wifi_args).await;
+    }
+
     // Spawn the status display task.  We do this before the other tasks, as
     // once they are created they may try to update the status display.
     // However, it must be done after the GPIO static is created, as it needs
     // to retrieve the appropriate pin.
-    spawn_or_reboot(spawner.spawn(status_task(wifi_control)), "Status Display");
+    spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
 
     // Create the USB stack and the Bulk object.  We do this at the same time
     // because Bulk needs the endpoints from the USB Stack creation.

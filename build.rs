@@ -35,6 +35,9 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/");
 
+    // Re-run this build script of DEFMT_LOG changes.
+    println!("cargo:rerun-if-env-changed=DEFMT_LOG");
+
     // Get built-time information
     built::write_built_file().expect("Failed to acquire build-time information");
 
