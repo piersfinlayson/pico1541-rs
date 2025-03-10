@@ -12,12 +12,10 @@ keywords = ["OpenCBM", "xum1541", "Commodore", "disk", "embassy"]
 # Do not use arbitrary sets of features manually to build different versions of the firmware.
 # Instead, use cargo build --bin xum1541|pico1541|pico1541w  --features xum1541|pico1541|pico1541w
 [features]
-xum1541 = [ "compatibility" ]
-pico1541 = [ "extended" ]
-pico1541w = [ "extended", "wifi" ]
+xum1541 = [ "compatibility", "prototype" ]
+pico1541 = [ "extended", "prototype" ]
 compatibility = []
 extended = []
-wifi = []
 prototype = []
 
 [lib]
@@ -33,20 +31,13 @@ test = false
 required-features = ["xum1541"]
 
 # Builds a pico1541 firmware  - you have to manually specify the required
-# feature(s)
+# feature(s).  This includes the Pico W with WiFi support automatically
+# enabled when the W variant is detected.
 [[bin]]
 name = "pico1541"
 path = "src/bin/pico1541.rs"
 test = false
 required-features = ["pico1541"]
-
-# Builds pico1541 firmware with WiFi support - you have to manually specify
-# the required feature(s)
-[[bin]]
-name = "pico1541w"
-path = "src/bin/pico1541w.rs"
-test = false
-required-features = ["pico1541w"]
 
 [dependencies]
 # embassy-rs crates

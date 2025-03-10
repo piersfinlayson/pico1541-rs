@@ -53,7 +53,6 @@ cargo run
 To build you needs to specify the binary name and feature name.  They are identical, and takes the values:
 * xum1541
 * pico1541
-* pico1541w
 
 For example:
 
@@ -67,16 +66,10 @@ Or:
 cargo run --bin pico1541 --features pico1541
 ```
 
-Or:
-
-```bash
-cargo run --bin pico1541w --features pico1541w
-```
-
 To flash and then auto-run the firmware, with your pico probe attached:
 
 ```bash
-cargo run --bin xum1541 --features xum1541 # or pico1541 or pico1541w
+cargo run --bin xum1541 --features xum1541 # or pico1541
 ```
 
 Once the image has been flashed to your device, your host will detect a new USB device with the appropriate vendor ID/product ID, depending on which you specified.  Run ```dmesg``` - this examples shows it in xum1541 mode.

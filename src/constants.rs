@@ -154,6 +154,28 @@ pub const XUM1541_FIRMWARE_VERSION: u8 = 8;
 pub const PICO1541_FIRMWARE_VERSION: u8 = 1;
 
 //
+// Pin constants
+//
+// Not all pins have constants - see gpio.rs for other pin assignments
+//
+
+/// WiFi power pin
+pub const WIFI_PWR_PIN: u8 = 23;
+
+/// WiFi chip select pin
+pub const WIFI_CS_PIN: u8 = 25;
+
+/// WiFi SPI DIO pin
+pub const WIFI_DIO_PIN: u8 = 24;
+
+/// WiFi SPI CLK pin
+pub const WIFI_CLK_PIN: u8 = 29;
+
+/// ADC pin used to check voltage for WiFI capability detection
+#[allow(dead_code)] // Only used within const_assert!()
+pub const WIFI_DETECT_ADC_PIN: u8 = 29;
+
+//
 // Other constants
 //
 
@@ -169,6 +191,6 @@ pub const CORE1_STACK_SIZE: usize = 4096;
 // outstanding
 pub const READ_DATA_CHANNEL_SIZE: usize = 1;
 
-// Total number of "generic" GPIOs - those which are exposed from the Pico
-// externally, for general purposes, not including WiFi or ADC pins.
+/// Total number of "generic" GPIOs - those which are exposed from the Pico
+/// externally, for general purposes, not including WiFi or ADC pins.
 pub const TOTAL_GENERIC_GPIOS: usize = 23; // 0-22 inclusive

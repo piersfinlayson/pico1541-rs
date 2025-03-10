@@ -41,7 +41,10 @@ use embassy_time::with_timeout;
 use static_assertions::const_assert;
 use static_cell::StaticCell;
 
-use crate::constants::{WIFI_CONTROL_WAIT_TIMER, WIFI_CONTROL_WATCHDOG_TIMER};
+use crate::constants::{
+    WIFI_CLK_PIN, WIFI_CONTROL_WAIT_TIMER, WIFI_CONTROL_WATCHDOG_TIMER, WIFI_DETECT_ADC_PIN,
+    WIFI_DIO_PIN,
+};
 use crate::gpio::GPIO;
 use crate::task::spawn_or_reboot;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
@@ -101,6 +104,7 @@ impl WiFi {
     /// Creates a new instance of the WiFi object.
     pub async fn create_static(p_adc: ADC, p_pio0: PIO0, p_dma_ch0: DMA_CH0) -> &'static mut Self {
         // Get the ADC pin required to detect whether WiFi is supported.
+        const_assert!(WIFI_DETECT_ADC_PIN == 29);
         let adc_pin = GPIO
             .lock()
             .await
@@ -218,9 +222,12 @@ impl WiFi {
             // object as the pin types themselves, rather than generic Flex,
             // AnyPin or other types, so the WiFi code knows these support the
             // required SPI capabilities.
-            assert!(wifi_config.dio == 24);
-            assert!(wifi_config.clk == 29);
+            const_assert!(WIFI_DIO_PIN == 24);
+            assert!(wifi_config.dio == WIFI_DIO_PIN);
             let doi_pin = guard.take_pin24().expect("Failed to get DIO pin");
+
+            const_assert!(WIFI_CLK_PIN == WIFI_DETECT_ADC_PIN);
+            assert!(wifi_config.clk == WIFI_CLK_PIN);
             let clk_pin = self.adc_pin.take().expect("Failed to get CLK pin");
 
             (pwr_pin, cs_pin, doi_pin, clk_pin)

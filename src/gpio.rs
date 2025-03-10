@@ -32,6 +32,8 @@ pub mod config {
     // settings wil not be included, depending on the device the firmware is
     // being built for.
     #![allow(dead_code)]
+    use crate::constants::{WIFI_CLK_PIN, WIFI_CS_PIN, WIFI_DIO_PIN, WIFI_PWR_PIN};
+
     use super::*;
 
     /// Standard configuration for original hardware
@@ -48,26 +50,6 @@ pub mod config {
     pub fn standard_v0_1() -> PinConfig {
         PinConfig {
             status_display_pin: 25,
-            iec_pins: iec_pico1541_v0_1(),
-            ieee_pins: ieee_pico1541_v0_1(),
-            wifi_pins: Some(wifi_config()),
-        }
-    }
-
-    /// Configuration for pico1541w variant
-    pub fn pico1541w_protoype() -> PinConfig {
-        PinConfig {
-            status_display_pin: 0,
-            iec_pins: iec_prototype(),
-            ieee_pins: ieee_prototype(),
-            wifi_pins: Some(wifi_config()),
-        }
-    }
-
-    /// Configuration for pico1541w v0.1 board
-    pub fn pico1541w_v0_1() -> PinConfig {
-        PinConfig {
-            status_display_pin: 0,
             iec_pins: iec_pico1541_v0_1(),
             ieee_pins: ieee_pico1541_v0_1(),
             wifi_pins: Some(wifi_config()),
@@ -140,12 +122,13 @@ pub mod config {
         }
     }
 
+    // WiFi pins used by the Pico W.
     fn wifi_config() -> WiFiPinConfig {
         WiFiPinConfig {
-            pwr: 23,
-            cs: 25,
-            dio: 24,
-            clk: 29,
+            pwr: WIFI_PWR_PIN,
+            cs: WIFI_CS_PIN,
+            dio: WIFI_DIO_PIN,
+            clk: WIFI_CLK_PIN,
         }
     }
 }
@@ -250,28 +233,13 @@ pub struct WiFiPinConfig {
 /// Default pin configuration
 impl Default for PinConfig {
     fn default() -> Self {
-        #[cfg(not(feature = "pico1541w"))]
+        #[cfg(feature = "prototype")]
         {
-            #[cfg(feature = "prototype")]
-            {
-                config::standard_protoype()
-            }
-            #[cfg(not(feature = "prototype"))]
-            {
-                config::standard_v0_1()
-            }
+            config::standard_protoype()
         }
-
-        #[cfg(feature = "pico1541w")]
+        #[cfg(not(feature = "prototype"))]
         {
-            #[cfg(feature = "prototype")]
-            {
-                config::pico1541w_protoype()
-            }
-            #[cfg(not(feature = "prototype"))]
-            {
-                config::pico1541w_v0_1()
-            }
+            config::standard_v0_1()
         }
     }
 }
