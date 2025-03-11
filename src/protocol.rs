@@ -204,8 +204,16 @@ impl ProtocolHandler {
             self.gpios[self.iec_pins.srq_out as usize].take().unwrap(),
         );
 
+        let mut dio_pins: [Option<Dio>; 8] = [const { None }; 8];
+        for (ii, dio_pin) in dio_pins.iter_mut().enumerate() {
+            *dio_pin = Some(Dio {
+                pin_num: self.ieee_pins.d_io[ii],
+                pin: Some(self.gpios[self.ieee_pins.d_io[ii] as usize].take().unwrap()),
+            });
+        }
+
         // Create the bus
-        let iec_bus = IecBus::new(clock_line, data_line, atn_line, reset_line, srq_line);
+        let iec_bus = IecBus::new(clock_line, data_line, atn_line, reset_line, srq_line, dio_pins);
 
         // Create the IEC driver
         let iec_driver = IecDriver::new(iec_bus);
@@ -223,6 +231,19 @@ impl ProtocolHandler {
                     self.gpios[input_pin_num as usize] = input_pin;
                     self.gpios[output_pin_num as usize] = output_pin;
                 }
+
+                if let Some(mut dios) = iec.retrieve_dios() {
+                    for dio in dios.iter_mut() {
+                        let mut dio = dio.take().expect("Missing DIO");
+                        let pin_num = dio.pin_num;
+                        let pin = dio.pin.take().expect("Missing DIO pin");
+                        self.gpios[pin_num as usize] = Some(pin);
+                    }
+
+                } else {
+                    warn!("No DIO pins to retrieve from IEC object");
+                }
+
             }
             Driver::Ieee(_) => unimplemented!("IEEE driver not implemented"),
             Driver::Tape(_) => unimplemented!("Tape driver not implemented"),
@@ -1200,3 +1221,8 @@ impl defmt::Format for Status {
         defmt::write!(fmt, "Status({:?}, 0x{:04x})", self.code, self.value)
     }
 }
+
+pub struct Dio {
+    pub pin_num: u8,
+    pub pin: Option<Flex<'static>>,
+} 
