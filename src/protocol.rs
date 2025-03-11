@@ -233,6 +233,26 @@ impl ProtocolHandler {
         }
     }
 
+    fn try_drop_driver(&mut self) -> Result<(), ()> {
+        let result = DRIVER.try_lock();
+
+        let mut guard = match result {
+            Ok(guard) => guard,
+            Err(e) => {
+                warn!("Failed to lock driver mutex {}", e);
+                return Err(());
+            }
+        };
+
+        // Take the driver, retrieve the pins, then drop it (when it goes out
+        // of scope)
+        if let Some(mut driver) = guard.take() {
+            self.retrieve_driver_pins(&mut driver);
+        }
+
+        Ok(())
+    }
+
     fn try_init_driver(&mut self) -> Result<(), ()> {
         let result = DRIVER.try_lock();
 
@@ -556,18 +576,26 @@ impl ProtocolHandler {
     async fn initialize(&mut self) {
         info!("Protocol Handler - initialized");
         self.state = ProtocolState::Initialized;
-        update_status(DisplayType::Active);
+
         UsbDataTransfer::lock_clear().await;
 
-        let _ = self.try_init_driver();
+        match self.try_init_driver() {
+            Ok(_) => update_status(DisplayType::Active),
+            Err(_) => update_status(DisplayType::Error),
+        }
     }
 
     // Uninitialize the ProtocolHandler.  Any outstanding transfer is cleared.
     async fn uninitialize(&mut self) {
         info!("Protocol Handler - uninitialized");
         self.state = ProtocolState::Uninitialized;
-        update_status(DisplayType::Ready);
+
         UsbDataTransfer::lock_clear().await;
+
+        match self.try_drop_driver() {
+            Ok(_) => update_status(DisplayType::Ready),
+            Err(_) => update_status(DisplayType::Error),
+        }
     }
 
     // Reset the ProtocolHandler.  Any outstanding transfer is cleared.
@@ -583,6 +611,7 @@ impl ProtocolHandler {
         // Reset the bus
         if let Err(e) = guard.as_mut().unwrap().reset(false).await {
             info!("Hit error reseting the bus {}", e);
+            update_status(DisplayType::Error);
         }
 
         // Clear out any existing transfers

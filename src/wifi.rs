@@ -315,7 +315,7 @@ pub async fn wifi_control_task(mut control: Control<'static>) -> ! {
         // Wait for the signal to update the WiFi GPIO 0.
         if let Ok(state) = with_timeout(WIFI_CONTROL_WAIT_TIMER, WIFI_GPIO_0.wait()).await {
             // wait() returned, so the Signal was signalled.
-            debug!("Set WiFi GPIO 0 state to {}", state);
+            trace!("Set WiFi GPIO 0 state to {}", state);
             control.gpio_set(0, state).await;
         }
 

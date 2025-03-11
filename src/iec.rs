@@ -12,7 +12,6 @@ use embassy_time::{with_timeout, Delay, Duration, Instant, Timer};
 use embedded_hal::delay::DelayNs;
 
 use crate::constants::{MAX_EP_PACKET_SIZE_USIZE, USB_DATA_TRANSFER_WAIT_TIMER};
-use crate::display::{update_status, DisplayType};
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::{ProtocolFlags, ProtocolType};
 use crate::transfer::UsbDataTransfer;
@@ -215,9 +214,6 @@ impl IecBus {
 
         // Initialize all pins to released state (similar to board_init_iec)
         bus.release_lines(IO_DATA | IO_CLK | IO_ATN | IO_RESET | IO_SRQ);
-
-        // Set initial status - LED on
-        update_status(DisplayType::Init);
 
         bus
     }

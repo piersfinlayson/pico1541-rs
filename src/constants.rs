@@ -150,8 +150,12 @@ pub const ECHO_CONTROL_RESPONSE_LEN: usize = 8;
 /// The xum1541 firmware version the pico1541 is emulating.
 #[cfg(feature = "compatibility")]
 pub const XUM1541_FIRMWARE_VERSION: u8 = 8;
+#[cfg(feature = "compatibility")]
+pub const FIRMWARE_VERSION: u8 = XUM1541_FIRMWARE_VERSION;
 #[cfg(feature = "extended")]
 pub const PICO1541_FIRMWARE_VERSION: u8 = 1;
+#[cfg(feature = "extended")]
+pub const FIRMWARE_VERSION: u8 = PICO1541_FIRMWARE_VERSION;
 
 //
 // Pin constants

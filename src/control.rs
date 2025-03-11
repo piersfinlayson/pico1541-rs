@@ -22,13 +22,14 @@ use embassy_usb::Handler;
 use static_cell::StaticCell;
 
 use crate::built::{GIT_VERSION, PKG_VERSION, RUSTC_VERSION};
+use crate::constants::FIRMWARE_VERSION;
 use crate::constants::{
     ECHO_CONTROL_RESPONSE_LEN, INIT_CONTROL_RESPONSE_LEN, MAX_XUM_DEVINFO_SIZE_USIZE,
 };
 use crate::display::{update_status, DisplayType};
 use crate::protocol::ProtocolAction;
 use crate::protocol::PROTOCOL_ACTION;
-use crate::types::Direction;
+use crate::types::{Capabilities, Direction, InitStatus};
 use crate::watchdog::reboot_dfu;
 
 // Our Control Handler handles Control requests that come in on the Control
@@ -170,13 +171,13 @@ impl Control {
     // Check the request is valid and supported.
     fn check_request(&self, req: Request, dir: Direction) -> Result<ControlRequest, ControlError> {
         // Trace the request.
-        trace!("Control request to interface: 0x{:02x}, request type: 0x{:02x}, recipient: {:?}, direction: {}",
+        trace!("Control request to interface: 0x{:02x}, request type: {}, recipient: {}, direction: {}",
             req.index, req.request_type, req.recipient, dir);
 
         // Only handle Class request types to an Interface.
         if req.request_type != RequestType::Class || req.recipient != Recipient::Device {
             info!(
-                "Ignoring Control request type: 0x{:02x}, recipient: {:?}",
+                "Ignoring Control request type: {}, recipient: {}",
                 req.request_type, req.recipient
             );
             return Err(ControlError::Ignore);
@@ -252,18 +253,7 @@ impl Control {
         match request {
             ControlRequest::Echo => buf[0] = &ControlRequest::Echo as *const _ as u8,
             ControlRequest::Init => {
-                self.set_action(ProtocolAction::Initialize);
-
-                // Build the response
-                #[cfg(feature = "xum1541")]
-                {
-                    buf[0] = crate::constants::XUM1541_FIRMWARE_VERSION;
-                }
-                #[cfg(not(feature = "xum1541"))]
-                {
-                    buf[0] = crate::constants::PICO1541_FIRMWARE_VERSION;
-                }
-                buf[1] = 0x03;
+                self.handle_init(buf);
             }
             ControlRequest::GitRev => {
                 let version = GIT_VERSION.unwrap_or("unknown");
@@ -324,6 +314,34 @@ impl Control {
         // signal() always succeeds as it overwrites any other value - but
         // in any case there shouldn't be one because we just took it above.
         PROTOCOL_ACTION.signal(action);
+    }
+
+    // Dedicated function for handling ControlRequest::Init.
+    //
+    // Will assume that buf is long enough for the response, and it has been
+    // zeroed out.  The length was checked in control_in() and the buf zeroed
+    // in handle_in().
+    fn handle_init(&self, buf: &mut [u8]) {
+        assert!(buf.len() >= INIT_CONTROL_RESPONSE_LEN);
+
+        // Inidicate the Protocol Handler that it should initialize.
+        self.set_action(ProtocolAction::Initialize);
+
+        // Build the response.
+
+        // Byte 0 is the xum1541 (or pico1541) firmware version.
+        buf[0] = FIRMWARE_VERSION;
+
+        // Byte 1 contains any capabilities of this device.
+        buf[1] = Capabilities::CBM.bits();
+
+        // Byte 2 contains any initialization status flags.
+        buf[2] = InitStatus::NONE.bits();
+
+        // TO DO - we should query ProtocolHandler to figure out:
+        // - whether there was an unclean shutdown, InitStatus::DOING_RESET
+        // - whether an IEEE-488 device is present, InitStatus::IEEE488_PRESENT
+        // - whether a tape is present, InitStatus::TAPE_PRESENT
     }
 }
 
