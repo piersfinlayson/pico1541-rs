@@ -49,7 +49,7 @@ pub mod config {
     // Pinout used for pico1541 v0.1 board
     fn iec_pico1541_v0_1() -> IecPinConfig {
         IecPinConfig {
-            clock_in: 21,
+            clock_in: 19,
             clock_out: 11,
             data_in: 20,
             data_out: 13,
@@ -65,7 +65,7 @@ pub mod config {
     // Pinout used for pico1541 v0.1 board
     fn ieee_pico1541_v0_1() -> IeeePinConfig {
         IeeePinConfig {
-            nrfd_in: 21,
+            nrfd_in: 19,
             nrfd_out: 11,
             ndac_in: 20,
             ndac_out: 13,

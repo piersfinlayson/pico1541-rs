@@ -25,17 +25,13 @@ use crate::constants::{
     USB_DATA_TRANSFER_WAIT_TIMER,
 };
 use crate::display::{update_status, DisplayType};
-use crate::driver::{raw_read_task, raw_write_task, Driver, ProtocolDriver, DRIVER};
+use crate::driver::{abort, clear_abort, driver_in_use, raw_read_task, raw_write_task, Driver, ProtocolDriver, DRIVER};
 use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
 use crate::iec::{IecBus, IecDriver, Line};
 use crate::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
 use crate::types::Direction;
 use crate::usb::WRITE_EP;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
-
-//
-// Statics
-//
 
 /// The PROTOCOL_ACTION static is a Signal that is used to communicate to the
 /// Protocol Handler that a protocol state change is requrested.  We use a
@@ -233,56 +229,27 @@ impl ProtocolHandler {
         }
     }
 
-    fn try_drop_driver(&mut self) -> Result<(), ()> {
-        let result = DRIVER.try_lock();
-
-        let mut guard = match result {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!("Failed to lock driver mutex {}", e);
-                return Err(());
-            }
-        };
+    async fn drop_driver(&mut self) {
+        // Lock the driver - this will succeed once any ongoing task has
+        // aborted.
+        abort();
+        let mut guard = DRIVER.lock().await;
+        clear_abort();
 
         // Take the driver, retrieve the pins, then drop it (when it goes out
         // of scope)
         if let Some(mut driver) = guard.take() {
             self.retrieve_driver_pins(&mut driver);
         }
-
-        Ok(())
-    }
-
-    fn try_init_driver(&mut self) -> Result<(), ()> {
-        let result = DRIVER.try_lock();
-
-        let mut guard = match result {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!("Failed to lock driver mutex {}", e);
-                return Err(());
-            }
-        };
-
-        // If we have a driver already we need to remove the pins and drop it.
-        if let Some(mut driver) = guard.take() {
-            self.retrieve_driver_pins(&mut driver);
-        }
-        // Existing driver gets dropped here
-
-        // Check which driver type we want to create.
-        // TODO
-
-        // Create the appropriate driver
-        let driver = self.create_iec_driver();
-        *guard = Some(driver);
-
-        Ok(())
     }
 
     // Initialize the correct driver type.
     async fn init_driver(&mut self) {
+        // Lock the driver - this will succeed once any ongoing task has
+        // aborted.
+        abort();
         let mut guard = DRIVER.lock().await;
+        clear_abort();
 
         // If we have a driver already we need to remove the pins and drop it.
         if let Some(mut driver) = guard.take() {
@@ -362,7 +329,7 @@ impl ProtocolHandler {
         // We have to "try" this because it is possible there is a transfer
         // outstanding and the driver is locked because of that.)
         if let Ok(true) = Driver::try_is_none() {
-            debug!("No driver - create it");
+            info!("No driver - create it");
             self.init_driver().await;
         }
 
@@ -394,19 +361,30 @@ impl ProtocolHandler {
         let command = match Command::new(data, len) {
             Ok(command) => command,
             Err(_) => {
-                info!("Failed to parse command - drop it");
+                warn!("Failed to parse command - drop it");
                 update_status(DisplayType::Error);
                 return;
             }
         };
 
+        info!("New command: {}", command.command);
+
+        // See if the driver is currently locked - this means that a command
+        // is in progress, so we can't handle this one.
+        if driver_in_use() {
+            warn!("Driver in use - drop command {}", command.command);
+            update_status(DisplayType::Error);
+            return;
+        } 
+
         match command.command {
             // Create a new OUT/write transfer.
             CommandType::Write => {
-                info!("Host to WRITE {} bytes", command.len);
+                debug!("Host to WRITE {} bytes, protocol {}, {}", command.len, command.protocol, command.flags);
 
                 if !command.protocol.supported() {
                     // Try to send an error
+                    warn!("Unsupported protocol {}", command.protocol);
                     self.send_status(Status {
                         code: StatusCode::Error,
                         value: command.len,
@@ -442,11 +420,12 @@ impl ProtocolHandler {
 
             // Create a new IN/read transfer.
             CommandType::Read => {
-                info!("Host to READ {} bytes", command.len);
+                debug!("Host to READ {} bytes, protocol {}", command.len, command.protocol);
 
                 if !command.protocol.supported() {
                     // Send a zero length packet (we don't send status in
                     // response to a read error).
+                    warn!("Unsupported protocol {}", command.protocol);
                     let _ = self.write_ep.write(&[]).await;
                     update_status(DisplayType::Error);
                 }
@@ -499,7 +478,7 @@ impl ProtocolHandler {
                     .await
                     .as_mut()
                     .unwrap()
-                    .wait(line, state)
+                    .wait(line, state, None)
                     .await
                 {
                     Ok(_) => {
@@ -579,10 +558,9 @@ impl ProtocolHandler {
 
         UsbDataTransfer::lock_clear().await;
 
-        match self.try_init_driver() {
-            Ok(_) => update_status(DisplayType::Active),
-            Err(_) => update_status(DisplayType::Error),
-        }
+        self.init_driver().await;
+
+        update_status(DisplayType::Active);
     }
 
     // Uninitialize the ProtocolHandler.  Any outstanding transfer is cleared.
@@ -592,10 +570,9 @@ impl ProtocolHandler {
 
         UsbDataTransfer::lock_clear().await;
 
-        match self.try_drop_driver() {
-            Ok(_) => update_status(DisplayType::Ready),
-            Err(_) => update_status(DisplayType::Error),
-        }
+        self.drop_driver().await;
+
+        update_status(DisplayType::Ready);
     }
 
     // Reset the ProtocolHandler.  Any outstanding transfer is cleared.
@@ -687,7 +664,7 @@ impl ProtocolHandler {
 
                     if send_response {
                         // Send the response
-                        debug!("Send OUT transfer status");
+                        debug!("Send OUT transfer status {:?}", status);
                         let result = self.write_ep.write(&status.to_bytes()).await;
                         if let Err(e) = result {
                             warn!("Failed to send status {}", e);
@@ -812,7 +789,7 @@ impl ProtocolHandler {
         // See if there's any data on Channel
         match WRITE_DATA_CHANNEL.try_receive() {
             Ok((size, data)) => {
-                info!("Received data from channel: {:?}", data);
+                trace!("Received data from channel: {:?}", data);
                 if size <= MAX_WRITE_SIZE_USIZE {
                     // We got bulk data.  Handle it.
                     self.received_data(&data, size as u16).await;
@@ -1215,5 +1192,11 @@ impl Status {
         bytes[0] = self.code.clone() as u8;
         bytes[1..3].copy_from_slice(&self.value.to_le_bytes());
         bytes
+    }
+}
+
+impl defmt::Format for Status {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "Status({:?}, 0x{:04x})", self.code, self.value)
     }
 }

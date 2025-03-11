@@ -8,8 +8,10 @@
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
+use embassy_time::Duration;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::iec::IecDriver;
 use crate::ieee::IeeeDriver;
@@ -17,8 +19,15 @@ use crate::protocol::{ProtocolFlags, ProtocolType};
 use crate::tape::TapeDriver;
 use crate::transfer::{UsbDataTransfer, UsbTransferResponse};
 
+//
+// Statics
+//
+
 // A static for the current driver in use.
 pub static DRIVER: Mutex<ThreadModeRawMutex, Option<Driver>> = Mutex::new(None);
+
+// Static used to signal to a driver task whether it should abort. 
+pub static ABORT_DRIVER_TASK: AtomicBool = AtomicBool::new(false);
 
 /// Defines errors for ProtocolDriver implementations.
 #[allow(dead_code)]
@@ -91,7 +100,7 @@ pub trait ProtocolDriver {
     ///
     /// # Returns
     /// Ok(()) if the line reached the desired state otherwise an error
-    async fn wait(&mut self, line: u8, state: u8) -> Result<(), DriverError>;
+    async fn wait(&mut self, line: u8, state: u8, timeout: Option<Duration>) -> Result<(), DriverError>;
 
     /// Poll the current state of the bus lines.
     ///
@@ -111,6 +120,12 @@ pub trait ProtocolDriver {
 
     /// Clear the End of Indiciation (EOI) status
     fn clear_eoi(&mut self);
+
+    /// Checks whether the task should abort
+    #[inline(always)]
+    fn check_abort(&self) -> bool {
+        check_abort()
+    }
 }
 
 pub enum Driver {
@@ -151,11 +166,11 @@ impl ProtocolDriver for Driver {
         }
     }
 
-    async fn wait(&mut self, line: u8, state: u8) -> Result<(), DriverError> {
+    async fn wait(&mut self, line: u8, state: u8, timeout: Option<Duration>) -> Result<(), DriverError> {
         match self {
-            Driver::Iec(driver) => driver.wait(line, state).await,
-            Driver::Ieee(driver) => driver.wait(line, state).await,
-            Driver::Tape(driver) => driver.wait(line, state).await,
+            Driver::Iec(driver) => driver.wait(line, state, timeout).await,
+            Driver::Ieee(driver) => driver.wait(line, state, timeout).await,
+            Driver::Tape(driver) => driver.wait(line, state, timeout).await,
         }
     }
 
@@ -219,7 +234,9 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
     debug!("Starting raw_write_task");
 
     let response = {
+        abort();
         let mut guard = DRIVER.lock().await;
+        clear_abort();
         let guard = guard.as_mut();
 
         match guard {
@@ -241,6 +258,11 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
 
     UsbDataTransfer::lock_set_response(response).await;
 
+    if check_abort() {
+        warn!("raw_write_task was aborted");
+        clear_abort();
+    }
+
     debug!("Finished raw_write_task");
 }
 
@@ -257,7 +279,9 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
     debug!("Starting raw_read_task");
 
     let response = {
+        abort();
         let mut guard = DRIVER.lock().await;
+        clear_abort();
         let guard = guard.as_mut();
 
         match guard {
@@ -279,5 +303,39 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
 
     UsbDataTransfer::lock_set_response(response).await;
 
+    if check_abort() {
+        warn!("raw_read_task was aborted");
+        clear_abort();
+    }
+
     debug!("Finished raw_read_task");
+}
+
+/// Helper function to abort the driver task.
+#[inline(always)]
+pub fn abort() {
+    info!("Aborting driver task");
+    ABORT_DRIVER_TASK.store(true, Ordering::SeqCst);
+}
+
+/// Helper function to clear the driver task abort.
+#[inline(always)]
+pub fn clear_abort() {
+    info!("Deasserting driver task abort");
+    ABORT_DRIVER_TASK.store(false, Ordering::SeqCst);
+}
+
+/// Helper function to check if the driver task should abort.
+#[inline(always)]
+pub fn check_abort() -> bool {
+    ABORT_DRIVER_TASK.load(Ordering::Relaxed)
+}
+
+/// Helper function to check if the driver is currently in use.
+#[inline(always)]
+pub fn driver_in_use() -> bool {
+    DRIVER.try_lock().map_or(true, |d| {
+        drop(d);
+        false
+    })
 }

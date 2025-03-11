@@ -8,11 +8,12 @@
 use core::cell::RefCell;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::pac::WATCHDOG as Pac_Watchdog;
+use embassy_rp::watchdog::ResetReason;
 use embassy_rp::peripherals::WATCHDOG as P_RpWatchdog;
 use embassy_rp::watchdog::Watchdog as RpWatchdog;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, Delay};
+use embedded_hal::delay::DelayNs;
 use rp2040_rom::ROM;
 
 use crate::constants::{WATCHDOG_LOOP_TIMER, WATCHDOG_TIMER};
@@ -41,22 +42,16 @@ pub struct Watchdog {
 impl Watchdog {
     /// Creates a new Watchdog object and stores it in the WATCHDOG static.
     pub fn create_static(p_watchdog: P_RpWatchdog) {
-        // Get the last reset reason.  There's supposed to be a reset_reason()
-        // function on Watchdog, but while it's in the source, it doesn't seem
-        // to be available in the embassy_rp crate.
-        let watchdog = Pac_Watchdog;
-        let reason = watchdog.reason().read();
-        let rr_str = if reason.force() {
-            "forced"
-        } else if reason.timer() {
-            "watchdog timer"
-        } else {
-            "unknown"
-        };
-        info!("Last reset reason: {}", rr_str);
-
         // Set up the hardware watchdog
         let hw_watchdog = RpWatchdog::new(p_watchdog);
+
+        // Log the last reset reason
+        let rr_str = match hw_watchdog.reset_reason() {
+            Some(ResetReason::Forced) => "forced",
+            Some(ResetReason::TimedOut) => "watchdog timer",
+            None => "unknown",
+        };
+        info!("Last reset reason: {}", rr_str);
 
         // Create our watchdog object
         let watchdog = Watchdog {
@@ -117,6 +112,9 @@ impl Watchdog {
 
     fn trigger_reset(&mut self) -> ! {
         info!("Trigger reset");
+
+        // Brief pause to allow log to be produced
+        Delay.delay_us(10000);
 
         // Reboot the device
         self.hw_watchdog.trigger_reset();

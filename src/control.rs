@@ -171,8 +171,8 @@ impl Control {
     // Check the request is valid and supported.
     fn check_request(&self, req: Request, dir: Direction) -> Result<ControlRequest, ControlError> {
         // Trace the request.
-        trace!("Control request to interface: 0x{:02x}, request type: {}, recipient: {}, direction: {}",
-            req.index, req.request_type, req.recipient, dir);
+        debug!("Control request to interface: 0x{:02x}, request: {:#x}, request type: {}, recipient: {}, direction: {}",
+            req.index, req.request, req.request_type, req.recipient, dir);
 
         // Only handle Class request types to an Interface.
         if req.request_type != RequestType::Class || req.recipient != Recipient::Device {

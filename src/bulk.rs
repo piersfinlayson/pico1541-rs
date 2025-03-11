@@ -69,7 +69,11 @@ impl Bulk {
                 // Strictly, we can probably call read() in a select or similar
                 // as read() appears to be cancel safe - that is it does't
                 // lose data if the task is cancelled.
-                match self.read_ep.read(&mut data).await {
+                let result = self.read_ep.read(&mut data).await;
+
+                debug!("Bulk OUT endpoint read returned {:?}", result);
+
+                match result {
                     Ok(size) => {
                         // We got bulk data.  Handle it.
                         if size <= MAX_WRITE_SIZE_USIZE {
@@ -84,8 +88,6 @@ impl Bulk {
                                 size
                             );
                         }
-
-                        debug!("Successfully handled {} bytes from OUT endpoint", size);
                     }
                     Err(e) => {
                         // This occurs if the endpoint is disabled - so we go
@@ -120,6 +122,6 @@ pub async fn bulk_task() -> ! {
         .expect("Read endpoint not created");
     let mut bulk = Bulk::new(read_ep);
 
-    // Start Bulks' runner.
+    // Start Bulk's runner.
     bulk.run().await;
 }

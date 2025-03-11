@@ -76,6 +76,7 @@ const BUS_FREE_CHECK_INTERVAL: Duration = Duration::from_millis(1);
 const BUS_FREE_TIMEOUT: Duration = Duration::from_millis(1500);
 const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(1);
 const WAIT_INTERVAL: Duration = Duration::from_micros(1);
+const TALK_TIMEOUT: Duration = Duration::from_millis(1000);
 
 // Timer macros, used for simple inlines.
 //
@@ -541,7 +542,6 @@ impl ProtocolDriver for IecDriver {
             self.bus.set_lines(IO_CLK);
 
             // Send the byte
-            debug!("send byte");
             if self.send_byte(byte).await {
                 count += 1;
                 delay_block_us!(IEC_T_BB);
@@ -551,6 +551,8 @@ impl ProtocolDriver for IecDriver {
                 break Err(DriverError::Io);
             }
 
+            trace!("Written byte #{} to drive", count);
+
             feed_watchdog(TaskId::ProtocolHandler);
 
             // Break if we've sent all the bytes
@@ -559,12 +561,14 @@ impl ProtocolDriver for IecDriver {
             }
         };
 
-        debug!("Sent data: {}", result);
+        debug!("Finished writing data: {}", result);
 
-        match result {
+        let result = match result {
             Ok(_) => {
                 // Talk-ATN turn around if requested
                 if talk {
+                    debug!("Put drive into Talk mode");
+
                     // Hold DATA and release ATN
                     self.set_release(IO_DATA, IO_ATN).await;
                     // IEC_T_TK was defined to be -1 in the original C code which
@@ -583,16 +587,9 @@ impl ProtocolDriver for IecDriver {
                     // Wait for device to pull CLOCK low before returning.  As
                     // self.wait() is an external API, it takes IEC_* lines
                     // not IO_lines*
-                    if self.wait(IEC_CLOCK, 1).await.is_err() {
-                        // Abort was signalled.
-                        Err(DriverError::Abort)
-                    } else {
-                        debug!("Raw write: wrote {} bytes - talk", count);
-                        Ok(count)
-                    }
+                    self.wait(IEC_CLOCK, 1, Some(TALK_TIMEOUT)).await.map(|_| count)
                 } else {
                     self.bus.release_atn();
-                    debug!("Raw write: wrote {} bytes", count);
                     Ok(count)
                 }
             }
@@ -601,26 +598,23 @@ impl ProtocolDriver for IecDriver {
                 self.bus.iec_release(IO_CLK | IO_ATN);
                 Err(e)
             }
-        }
+        };
+
+        debug!("Raw write completed with result {:?}", result);
+        result
     }
 
-    // As this is wait forever, timing witht he loop isn't critical, so we use
+    // As this is wait forever, timing with the loop isn't critical, so we use
     // delay_yield.
-    async fn wait(&mut self, line: u8, state: u8) -> Result<(), DriverError> {
+    async fn wait(&mut self, line: u8, state: u8, timeout: Option<Duration>) -> Result<(), DriverError> {
         let hw_mask = self.iec2hw(line);
         let hw_state = if state != 0 { hw_mask } else { 0 };
 
-        // Continuously poll lines until we get the expected state or timeout
-        while (self.bus.poll_pins() & hw_mask) == hw_state {
-            // Check if we should cancel
-            if self.check_abort() {
-                return Err(DriverError::Abort);
-            }
-
-            delay_yield!(WAIT_INTERVAL);
+        let timeout = timeout.unwrap_or(Duration::MAX);
+        match self.wait_timeout_yield(hw_mask, hw_state, timeout, true).await {
+            true => Ok(()),
+            false => Err(DriverError::Timeout),
         }
-
-        Ok(())
     }
 
     // This is an externally exposed function, which returns IEC_* lines, not
@@ -697,7 +691,7 @@ impl IecDriver {
 
         // Main read loop
         let result = loop {
-            debug!(
+            trace!(
                 "raw_read Loop start: count {}, buf_count {}",
                 count, buf_count
             );
@@ -716,6 +710,7 @@ impl IecDriver {
                         delay_yield!(WAIT_INTERVAL);
 
                         if self.check_abort() {
+                            warn!("Aborted waiting for clock to be released");
                             break Err(DriverError::Abort);
                         }
                     }
@@ -729,8 +724,8 @@ impl IecDriver {
 
             // Break if we've already seen EOI
             if self.eoi {
-                error!("Raw read: EOI detected");
-                break Err(DriverError::Io);
+                debug!("Raw read: EOI detected at {} bytes", count);
+                break Ok(count);
             }
 
             // Release DATA line to signal we're ready for data
@@ -756,6 +751,7 @@ impl IecDriver {
                 Ok(byte) => {
                     // Acknowledge byte received by pulling DATA
                     self.bus.set_data();
+                    trace!("Read byte #{}", count);
 
                     // Store the byte in our buffer
                     buffer[buf_count] = byte;
@@ -786,16 +782,13 @@ impl IecDriver {
             }
         };
 
-        if result.as_ref().err().is_some() {
-            if buf_count > 0 {
-                // Send any remaining data.  There should be fewer than 64
-                // bytes of data to send, as we should have sent the data
-                // immediately after hitting 64 bytes.
-                debug!("Hit error reading, sending outstanding {} bytes", buf_count);
-                assert!(buf_count < MAX_EP_PACKET_SIZE_USIZE);
-                Self::send_data_to_host(&buffer, buf_count).await?;
-            }
-            error!("Raw read: error {}", result.as_ref().err().unwrap());
+        if buf_count > 0 {
+            // Send any remaining data.  There should be fewer than 64
+            // bytes of data to send, as we should have sent the data
+            // immediately after hitting 64 bytes.
+            debug!("Hit error reading, sending outstanding {} bytes", buf_count);
+            assert!(buf_count < MAX_EP_PACKET_SIZE_USIZE);
+            Self::send_data_to_host(&buffer, buf_count).await?;
         }
 
         result
@@ -832,6 +825,7 @@ impl IecDriver {
         // Wait for device to release DATA
         while self.bus.get_data() {
             if self.check_abort() {
+                warn!("Aborted waiting for listener");
                 return false;
             }
             delay_yield!(LISTENER_WAIT_INTERVAL);
@@ -929,13 +923,32 @@ impl IecDriver {
     /// Timing is considered critical here to wait for around 2ms.  Hence we
     /// use delay_block_us.
     fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
-        for _ in 0..200 {
+        self.wait_timeout_block(mask, state, Duration::from_millis(2))
+    }
+
+    fn wait_timeout_block(&mut self, mask: u8, state: u8, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            // Hard loop, as we want to block anyway
             if (self.bus.poll_pins() & mask) != state {
-                return true;
+                break;
             }
-            delay_block_us!(10);
         }
-        self.bus.poll_pins() & mask != state
+        (self.bus.poll_pins() & mask) != state
+    }
+
+    async fn wait_timeout_yield(&mut self, mask: u8, state: u8, timeout: Duration, feed: bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if (self.bus.poll_pins() & mask) != state {
+                break;
+            }
+            if feed {
+                feed_watchdog(TaskId::ProtocolHandler);
+            } 
+            delay_yield_us!(1);
+        }
+        (self.bus.poll_pins() & mask) != state
     }
 
     /// Wait for the bus to be free
@@ -951,6 +964,7 @@ impl IecDriver {
 
                 // Check if we should cancel
                 if device.check_abort() {
+                    warn!("Aborted waiting for free bus");
                     return Err(DriverError::Abort);
                 }
 
@@ -1014,12 +1028,6 @@ impl IecDriver {
 
         // Check if drive released DATA
         !self.bus.get_data()
-    }
-
-    // Check if host signaled an abort
-    fn check_abort(&self) -> bool {
-        // TO DO
-        false // Placeholder
     }
 
     /// Convert logical IEC lines to hardware-specific representation

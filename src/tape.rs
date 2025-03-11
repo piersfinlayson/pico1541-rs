@@ -7,6 +7,7 @@
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
+use embassy_time::Duration;
 
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::{ProtocolFlags, ProtocolType};
@@ -32,7 +33,7 @@ impl ProtocolDriver for TapeDriver {
         unimplemented!()
     }
 
-    async fn wait(&mut self, line: u8, state: u8) -> Result<(), DriverError> {
+    async fn wait(&mut self, line: u8, state: u8, timeout: Option<Duration>) -> Result<(), DriverError> {
         unimplemented!()
     }
 
