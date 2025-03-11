@@ -45,12 +45,12 @@ To quote:
 
 ## Quick Start
 
-If you already have Rust, probe-rs, Rust RP2040 target support (thumbv6m-none-eabi) and the various required build tools installed, all you need to do to build, flash and run this firmware to operate in xum1541 compatibility-mode is: 
+If you already have Rust, probe-rs, Rust RP2040 target support (thumbv6m-none-eabi) and the various required build tools installed, all you need to do to build, flash and run this firmware for the Pico (1) to operate in xum1541 compatibility-mode is:
 
 ```bash
 git clone https://github.com/piersfinlayson/pico1541-rs
 cd pico1541-rs
-cargo run --bin xum1541 --features xum1541
+./build.sh xum1541 pico
 ```
 
 That's it - the pico1541 will now be up and running and connected to the USB bus, presenting itself as an xum1541.  See [`pcb/pico1541_schematic.pdf`](pcb/pico1541_schematic.pdf) for the pins used by this configuration.

@@ -36,16 +36,6 @@ pub mod config {
 
     use super::*;
 
-    /// Standard configuration for original hardware
-    pub fn standard_protoype() -> PinConfig {
-        PinConfig {
-            status_display_pin: 25,
-            iec_pins: iec_prototype(),
-            ieee_pins: ieee_prototype(),
-            wifi_pins: Some(wifi_config()),
-        }
-    }
-
     /// Configuration for v0.1 board
     pub fn standard_v0_1() -> PinConfig {
         PinConfig {
@@ -53,22 +43,6 @@ pub mod config {
             iec_pins: iec_pico1541_v0_1(),
             ieee_pins: ieee_pico1541_v0_1(),
             wifi_pins: Some(wifi_config()),
-        }
-    }
-
-    // Pinout used for initial prototyping
-    fn iec_prototype() -> IecPinConfig {
-        IecPinConfig {
-            clock_in: 2,
-            clock_out: 3,
-            data_in: 4,
-            data_out: 5,
-            atn_in: 6,
-            atn_out: 7,
-            reset_in: 8,
-            reset_out: 9,
-            srq_in: 10,
-            srq_out: 11,
         }
     }
 
@@ -85,23 +59,6 @@ pub mod config {
             reset_out: 10,
             srq_in: 16,
             srq_out: 14,
-        }
-    }
-
-    // Pinout used for initial prototyping
-    fn ieee_prototype() -> IeeePinConfig {
-        IeeePinConfig {
-            nrfd_in: 2,
-            nrfd_out: 3,
-            ndac_in: 4,
-            ndac_out: 5,
-            atn_in: 6,
-            atn_out: 7,
-            ifc_in: 8,
-            ifc_out: 9,
-            srq_in: 10,
-            srq_out: 11,
-            d_io: [12, 13, 14, 15, 16, 17, 18, 19],
         }
     }
 
@@ -233,14 +190,7 @@ pub struct WiFiPinConfig {
 /// Default pin configuration
 impl Default for PinConfig {
     fn default() -> Self {
-        #[cfg(feature = "prototype")]
-        {
-            config::standard_protoype()
-        }
-        #[cfg(not(feature = "prototype"))]
-        {
-            config::standard_v0_1()
-        }
+        config::standard_v0_1()
     }
 }
 

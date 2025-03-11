@@ -25,7 +25,7 @@ pub static STATUS_DISPLAY: Signal<CriticalSectionRawMutex, DisplayType> = Signal
 /// Status display types
 /// Corresponds to the different operating states of the device
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub enum DisplayType {
     /// Initialization state, LED is fully on
     Init,
@@ -95,10 +95,8 @@ impl StatusDisplay {
     // Turns the appropriate LED on
     async fn led_on(&mut self) {
         if let Some(led) = self.led.as_mut() {
-            debug!("Turning LED on via GPIO 25");
             led.set_high();
         } else {
-            debug!("Turning LED on via WiFi GPIO 0");
             WIFI_GPIO_0.signal(true);
         }
         self.led_state = true;
@@ -118,6 +116,8 @@ impl StatusDisplay {
     ///
     /// This is calld by other tasks to change what the LED displays.
     pub async fn update(&mut self, status: DisplayType) {
+        debug!("Update status to {}", status);
+
         // Only update LED immediately if changing to/from states with
         // different LED behaviors
         if self.current_status != status {

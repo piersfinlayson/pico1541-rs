@@ -3,7 +3,7 @@ name = "pico1541-rs"
 version = "0.1.0"
 edition = "2021"
 authors = ["Piers Finlayson <piers@piers.rocks>"]
-description = "A USB-based Commodore disk drive adapter for PCs, compatible with OpenCBM and drop-in replacement for the xum1541 "
+description = "A USB-based Commodore disk drive adapter for PCs, compatible with OpenCBM, a drop-in replacement for the xum1541, and provides additional functionality, like WiFi support."
 repository = "https://github.com/piersfinlayson/pico1541-rs"
 readme = "README.md"
 license = "GPLv3"
@@ -12,15 +12,17 @@ keywords = ["OpenCBM", "xum1541", "Commodore", "disk", "embassy"]
 # Do not use arbitrary sets of features manually to build different versions of the firmware.
 # Instead, use cargo build --bin xum1541|pico1541|pico1541w  --features xum1541|pico1541|pico1541w
 [features]
-xum1541 = [ "compatibility", "prototype" ]
-pico1541 = [ "extended", "prototype" ]
+xum1541 = [ "compatibility" ]
+pico1541 = [ "extended" ]
 compatibility = []
 extended = []
-prototype = []
+pico = [ "embassy-rp/rp2040" ]
+pico2 = [ "embassy-rp/rp235xa" ]
 
 [lib]
 name = "pico1541_rs"
 path = "src/lib.rs"
+test = false
 
 # Builds an xum1541 compatible firmware - you have manually specify the
 # required feature(s)
@@ -40,14 +42,17 @@ test = false
 required-features = ["pico1541"]
 
 [dependencies]
-# embassy-rs crates
+# embassy-rs crates - Note these are patched below to use a later version from
+# git.
 embassy-executor = { version = "0.7", features = ["task-arena-size-32768", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-rp = { version = "0.3", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040", "intrinsics"] }
+embassy-rp = { version = "0.3", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "binary-info", "intrinsics"] }
 embassy-usb = { version = "0.4", features = ["defmt"] }
 embassy-futures = { version = "0.1" }
 embassy-sync = { version = "0.6", features = ["defmt"] }
 embassy-time = { version = "0.4", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-embedded-hal = { version = "0.3" }
+cyw43 = { version = "0.3", package = "cyw43", features = ["defmt", "firmware-logs"] }
+cyw43-pio = { version = "0.3", package = "cyw43-pio", features = ["defmt"] }
 
 # Required for StaticCell and ConstStaticCell
 static_cell = { version = "2.1" }
@@ -55,10 +60,6 @@ portable-atomic = { version = "1.10", features = ["critical-section"] }
 
 # Required for heapless::{String, Vec}
 heapless = { version = "0.8" }
-
-# WiFi support
-cyw43 = { version = "0.3", features = ["defmt", "firmware-logs"] }
-cyw43-pio = { version = "0.3", features = ["defmt"] }
 
 # defmt (for RTT logging)
 defmt = "0.3"
@@ -83,14 +84,26 @@ rp2040-rom = "0.1.1"
 # Provides static asserts
 static_assertions = "1.1"
 
+# embassy on crates.io doesn't seem to be very up to date.  Therefore we need
+# to patch with a later version from the git repository.  The commit was
+# chosen based on the HEAD on 2025-03-11, 06:45 + 00:00.
+[patch.crates-io]
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+cyw43 = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+
 [build-dependencies]
 # Required for required build.rs support
 built = { version = "0.7", features = ["git2", "chrono"] }
 
 [profile.release]
 debug = 2
-lto = true
-opt-level = 'z'
 
 [profile.dev]
 debug = 2

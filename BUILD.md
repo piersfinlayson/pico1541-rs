@@ -50,29 +50,35 @@ cd pico1541-rs
 cargo run
 ```
 
-To build you needs to specify the binary name and feature name.  They are identical, and takes the values:
-* xum1541
-* pico1541
+You have a number of options when building.  You can choose:
+- xum1541 or pico1541 firmware (the former emulates the xum1541 and can be used with software like OpenCBM, the latter provides additional capabilities)
+- Pico or Pico 2
+- debug or release build
 
-For example:
+xum1541 emulates the xum1541, and can be used with software such as OpenCBM.
 
-```bash
-cargo run --bin xum1541 --features xum1541 
-```
+pico1541 adds additional functionality and is not compatible with software that expects an xum1541.
 
-Or:
+There is no need to specify a W (WiFi) or non-W variant of the Pico.  See  [WiFi Support](#wifi-support) for more information.
 
-```bash
-cargo run --bin pico1541 --features pico1541
-```
-
-To flash and then auto-run the firmware, with your pico probe attached:
+Scripts to build and run the chosen type of firmware are provided and are recommended for most users over using ```cargo``` directly.  Some examples:
 
 ```bash
-cargo run --bin xum1541 --features xum1541 # or pico1541
+./build.sh xum1541 pico            # Builds xum1541 for Pico, debug build
+./build.sh pico1541 pico2 release  # Builds pico1541 for Pico 2, release build
+./run.sh pico1541 pico             # Flashes pico1541 for Pico, debug
 ```
 
-Once the image has been flashed to your device, your host will detect a new USB device with the appropriate vendor ID/product ID, depending on which you specified.  Run ```dmesg``` - this examples shows it in xum1541 mode.
+Alternatively you can use ```cargo build``` and ```cargo run``` directly.  In this case, as well as the binary and features, in the Pico 2 case you need to specify the correct target.  Some examples:
+
+```bash
+cargo run --bin xum1541 --features xum1541,pico 
+cargo run --bin pico1541 --features pico1541,pico
+cargo run --bin xum1541 --features xum1541,pico2 --target thumbv8m.main-none-eabihf
+cargo run --bin pico1541 --features pico1541,pico2 --target thumbv8m.main-none-eabihf
+```
+
+Once the image has been flashed to your device, your host will detect a new USB device with the appropriate vendor ID/product ID, depending on which you specified.  Run ```dmesg``` - this example shows it in xum1541 mode.
 
 ```
 usb 1-1: New USB device found, idVendor=16d0, idProduct=0504, bcdDevice= 2.08
@@ -82,11 +88,11 @@ usb 1-1: Manufacturer: piers.rocks
 usb 1-1: SerialNumber: 000
 ```
 
-The pinouts used by the firmware are shown in the [schematic](pcb/pico1541_schematic.pdf).  There are other pin mappings supported via Cargo features.  These are defined in the `config` module within [`gpio.rs`](src/gpio.rs).  For example, to use the prototype pin mapping add the `prototype` feature like this:
+The pinouts used by the firmware are shown in the [schematic](pcb/pico1541_schematic.pdf).
 
-```bash
-cargo run --bin xum1541 --features xum1541,prototype
-``` 
+## WiFi Support
+
+There is no need to build a different image to include WiFi support.  The firmware will detect whether it's running on a Pico W (or Pico 2 W) variants, and includes WiFi support automatically if so.
 
 ## Debugging
 
@@ -94,9 +100,11 @@ embassy-rs based applications expect to be debugged by Debug Probe.  See [Settin
 
 ## Setting up a Pico Probe
 
-Find another Pico - it can be a W, but there's no benefit, as it'll be controlled via USB.
+You can buy a dedicated Debug Probe from Raspberry Pi, or install on another Pico.  This can be a W, but there's no benefit, as it'll be controlled via USB.
 
 ### Building picoprobe
+
+To build the picoprobe firmware to turn a Pico into a Debug Probe.
 
 ```bash
 git clone https://github.com/raspberrypi/picoprobe
@@ -140,10 +148,14 @@ This means you've successfully set this Pico up as a debug probe.
 
 ### Attaching the pico1541 to your probe
 
-You need to connect the debug probe Pico to the 3 debug pins on the Pico you want to flash pico1541-rs onto.  You can find these 3 debug pins at the opposite end of the Pico to the USB connector.  They are labelled DEBUG on the top of the BOARD and SWDIO/GND/SWCLK on the bottom. 
+You need to connect the debug probe Pico to the 3 debug pins on the Pico you want to flash pico1541-rs onto.  You can find these 3 debug pins at the opposite end of the Pico to the USB connector, or, on a W variant, just above the WiFi IC shield.  They are labelled DEBUG on the top of the BOARD and SWDIO/GND/SWCLK on the bottom.
+
+Using another Pico as the probe:
 * Probe pin 3 (GND) <-> Pico DEBUG GND
 * Probe pin 4 (GP2) <-> Pico DEBUG SWCLK
 * Probe pin 5 (GP3) <-> Pico DEBUG SWDIO 
+
+Or, if using a dedicated Debug Probe, the orange wire goes to SWCLK, the black to GND, and yellow to SWDIO.
 
 Now when you run ```probe-rs info``` should give you this output (amongst some warnings about the lack of JTAG support):
 
@@ -174,3 +186,26 @@ sudo make install
 ```
 No accessible RP-series devices in BOOTSEL mode were found.
 ```
+
+## Using picotool to flash the firmware
+
+If you'd rather use picotool to flash the firmware, you can do so by modifying [```.cargo/config/toml```](.cargo/config.toml).  Comment out the ```runner``` line for your target:
+
+```toml
+runner = "probe-rs run --no-location --chip RP2040"
+# Or
+runner = "probe-rs run --no-location --chip RP235x"
+```
+
+And uncomment this one:
+```toml
+#runner = "picotool load -u -v -x -t elf"
+```
+
+Or, you can run picotool directly, like this (where you may need to change the path to your firmware, depending on which version you want to flash):
+
+```bash
+picotool load -u -v -x -t elf target/thumbv6m-none-eabi/debug/xum1541
+```
+
+However, logging is only produced via RTT, not UART, and you need a Debug Probe to access to the RTT output.

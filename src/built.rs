@@ -32,11 +32,28 @@ pub use built_info::PKG_VERSION;
 
 /// Log build-time information to the console.
 pub fn log_fw_info(bin_name: &str, serial: &str) {
-    // General information
+    // Find out if WiFi supported
+    let is_wifi = IS_WIFI.load(Ordering::Relaxed);
+
+    // Figure out what hardware platform we're running on
+    let hardware = if cfg!(feature = "pico") {
+        match is_wifi {
+            true => "Pico W",
+            false => "Pico",
+        }
+    } else {
+        match is_wifi {
+            true => "Pico 2 W",
+            false => "Pico 2",
+        }
+    };
+
+    // Log general information
     info!("{} operating in {} mode", built_info::PKG_NAME, bin_name);
     info!("Author: {}", built_info::PKG_AUTHORS);
     info!("pico1541 Version: {}", built_info::PKG_VERSION);
-    info!("WiFi support: {}", IS_WIFI.load(Ordering::Relaxed));
+    info!("Hardware: {}", hardware);
+    info!("WiFi support: {}", is_wifi);
     #[cfg(feature = "compatibility")]
     info!(
         "xum1541 Version: {}",

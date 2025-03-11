@@ -1,5 +1,6 @@
 {
     "rust-analyzer.cargo.target": "thumbv6m-none-eabi",
     "rust-analyzer.checkOnSave.allTargets": false,
-    "rust-analyzer.cargo.features": ["xum1541"],
+    "rust-analyzer.cargo.features": [ "pico1541", "pico", ],
+    "rust-analyzer.check.command": "clippy",
 }

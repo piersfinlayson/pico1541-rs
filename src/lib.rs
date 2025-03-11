@@ -10,7 +10,6 @@
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
-
 #![no_std]
 #![no_main]
 
@@ -19,6 +18,10 @@
 compile_error!("Either 'xum1541/compatibility' or 'extended' feature must be enabled");
 #[cfg(all(feature = "compatibility", feature = "extended"))]
 compile_error!("Features 'xum1541/compatibility' and 'extended' cannot be enabled simultaneously");
+#[cfg(not(any(feature = "pico", feature = "pico2")))]
+compile_error!("Either 'pico' or 'pico2' feature must be enabled");
+#[cfg(all(feature = "pico", feature = "pico2"))]
+compile_error!("Features 'pico' and 'pico2' cannot be enabled simultaneously");
 
 // Declare all of this library's modules.
 mod built;
@@ -43,8 +46,7 @@ mod wifi;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
-use embassy_time::{Delay, Ticker};
-use embedded_hal::delay::DelayNs;
+use embassy_time::Ticker;
 
 use constants::LOOP_LOG_INTERVAL;
 use dev_info::get_serial;
@@ -89,6 +91,16 @@ use wifi::{spawn_wifi, WiFi};
 //
 // The statics tend to be stored in the module that creates them.  So, for
 // example, the GPIO static is in gpio.
+
+// Extra binary information that picotool can read.
+#[link_section = ".bi_entries"]
+#[used]
+pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
+    embassy_rp::binary_info::rp_program_name!(c"pico1541 by piers.rocks"),
+    embassy_rp::binary_info::rp_program_description!(c"A USB-based Commodore disk drive adapter for PCs, compatible with OpenCBM, a drop-in replacement for the xum1541, and provides additional, functionality, like WiFi support."),
+    embassy_rp::binary_info::rp_cargo_version!(),
+    embassy_rp::binary_info::rp_program_build_attribute!(),
+];
 
 // Our main function.  This is the entry point for our application and like
 // most embedded implementations, we do not want it to exit as that would mean
@@ -142,7 +154,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // Load the serial number.  This is done early, so we can log it.
     let mut p_flash = p_flash;
     let mut p_dma_ch0 = p_dma_ch0;
-    let (log_serial, usb_serial) = get_serial(&mut p_flash, &mut p_dma_ch0);
+    let (log_serial, usb_serial) = get_serial(&mut p_flash, &mut p_dma_ch0).await;
 
     // Create the Gpio object, which manages the pins
     Gpio::create_static(
@@ -218,7 +230,13 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
 pub fn defmt_panic_handler() -> ! {
     error!("Hit defmt panic handler");
 
-    force_reboot()
+    // Panic (and reboot) in release mode
+    #[cfg(not(debug_assertions))]
+    core::panic!();
+
+    // Abort in debug mode
+    #[cfg(debug_assertions)]
+    cortex_m::asm::udf();
 }
 
 // Core panic handler
@@ -238,11 +256,21 @@ pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
         let _ = info;
     }
 
-    force_reboot()
+    // Reboot if in release mode
+    #[cfg(not(debug_assertions))]
+    force_reboot();
+
+    // Abort in debug mode
+    #[cfg(debug_assertions)]
+    cortex_m::asm::udf();
 }
 
-// A relibale rebooting function
+// A reliable rebooting function
+#[cfg(not(debug_assertions))]
 fn force_reboot() -> ! {
+    use embassy_time::Delay;
+    use embedded_hal::delay::DelayNs;
+
     // cortex_m::peripheral::SCB::sys_reset();
 
     // sys_reset() doesn't work on core 1 so use the watchdog - get it.

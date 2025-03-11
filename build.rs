@@ -41,25 +41,39 @@ fn main() {
     // Get built-time information
     built::write_built_file().expect("Failed to acquire build-time information");
 
-    // `memory.x` file handling
+    // RP2040 and RP235X use different memory.x files.  Ensure the build
+    // script is re-run if the appropriate memory.x file changes.  Note that
+    // neither file should be called memory.x, as then the linker will pick up
+    // that file from our root directory, instead of the version we put in
+    // OUT_DIR, below.
+    #[cfg(feature = "pico")]
+    let memory_x = {
+        println!("cargo:rerun-if-changed=link/memory.rp2040.x");
+        include_bytes!("link/memory.rp2040.x")
+    };
+    #[cfg(feature = "pico2")]
+    let memory_x = {
+        println!("cargo:rerun-if-changed=link/memory.rp235x.x");
+        include_bytes!("link/memory.rp235x.x")
+    };
 
-    // Put `memory.x` in our output directory and ensure it's
-    // on the linker search path.
+    // Put `memory.x` in our output directory and ensure it's on the linker
+    // search path.
     let out = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
     File::create(out.join("memory.x"))
         .unwrap()
-        .write_all(include_bytes!("memory.x"))
+        .write_all(memory_x)
         .unwrap();
     println!("cargo:rustc-link-search={}", out.display());
 
-    // By default, Cargo will re-run a build script whenever any file in the
-    // project changes. By specifying `memory.x` here, we ensure the build
-    // script is re-run whenever `memory.x` is changed.
-    println!("cargo:rerun-if-changed=memory.x");
-
     // Set embassy linker arguments for the binary.
+    println!("cargo:rustc-link-arg=-v");
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
-    println!("cargo:rustc-link-arg-bins=-Tlink-rp.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
+    println!("cargo:rustc-link-arg-bins=-Tdevice.x");
+
+    // Only RP2040 uses this linker file.
+    #[cfg(feature = "pico")]
+    println!("cargo:rustc-link-arg-bins=-Tlink-rp.x");
 }
