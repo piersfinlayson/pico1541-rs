@@ -540,10 +540,7 @@ impl IecDriver {
         let atn = flags.is_atn();
         let talk = flags.is_talk();
 
-        trace!(
-            "CBM Write: {} bytes, ATN: {}, ATN: {}",
-            len, atn, talk
-        );
+        trace!("CBM Write: {} bytes, ATN: {}, ATN: {}", len, atn, talk);
 
         if len == 0 {
             return Ok(len);

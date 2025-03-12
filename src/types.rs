@@ -47,9 +47,18 @@ bitflags! {
     /// Initialization status flags for the device, returned on
     /// ControlRequest::Init response (byte 2).
     pub struct InitStatus: u8 {
+        /// No additional information.
         const NONE = 0x00;
-        const DOING_RESET = 0x01;
+
+        /// This device was not shutdown cleanly.  The xum1541 calls this
+        /// DOING_RESET, which will be happening, but this is clearer as to
+        /// the reason.
+        const NOT_SHUTDOWN = 0x01;
+
+        /// An IEEE-488 device is present.
         const IEEE488_PRESENT = 0x10;
+
+        /// A tape device is present.
         const TAPE_PRESENT = 0x20;
     }
 }

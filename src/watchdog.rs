@@ -107,7 +107,7 @@ impl Watchdog {
         // Start the hardware watchdog
         self.hw_watchdog.start(WATCHDOG_TIMER);
 
-        debug!("Watchdog started");
+        info!("Hardware watchdog started");
     }
 
     fn trigger_reset(&mut self) -> ! {
@@ -210,7 +210,9 @@ pub async fn watchdog_task() -> ! {
                 .as_mut()
                 .expect("Watchdog doesn't exist - can't run the watchdog");
 
-            // See if any tasks have starved us
+            // See if any tasks have starved us.  If not, feed the hardware
+            // watchdog.  If there are no registered tasks, we will also feed
+            // the hardware watchdog.
             let mut starved = false;
             for task in watchdog.tasks.iter().flatten() {
                 if task.starved() {
@@ -224,6 +226,7 @@ pub async fn watchdog_task() -> ! {
                 watchdog.feed_hw_watchdog();
             } else {
                 // Trigger a reset
+                error!("Triggering hardware watchdog");
                 watchdog.trigger_reset();
             }
         });

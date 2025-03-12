@@ -27,8 +27,10 @@ use crate::constants::{
     ECHO_CONTROL_RESPONSE_LEN, INIT_CONTROL_RESPONSE_LEN, MAX_XUM_DEVINFO_SIZE_USIZE,
 };
 use crate::display::{update_status, DisplayType};
-use crate::protocol::ProtocolAction;
-use crate::protocol::PROTOCOL_ACTION;
+use crate::protocol::{
+    get_ieee_present, get_protocol_init, get_tape_present, set_protocol_action,
+    take_protocol_action, ProtocolAction,
+};
 use crate::types::{Capabilities, Direction, InitStatus};
 use crate::watchdog::reboot_dfu;
 
@@ -291,7 +293,7 @@ impl Control {
     fn set_action(&self, action: ProtocolAction) {
         // Try to take the current action - if there is one we need to
         // decide how to modify it and then resignal it.
-        let action = match PROTOCOL_ACTION.try_take() {
+        let new_action = match take_protocol_action() {
             Some(existing) => {
                 match action {
                     // Initialize takes precedence over any other outstanding
@@ -313,7 +315,7 @@ impl Control {
 
         // signal() always succeeds as it overwrites any other value - but
         // in any case there shouldn't be one because we just took it above.
-        PROTOCOL_ACTION.signal(action);
+        set_protocol_action(new_action);
     }
 
     // Dedicated function for handling ControlRequest::Init.
@@ -324,7 +326,12 @@ impl Control {
     fn handle_init(&self, buf: &mut [u8]) {
         assert!(buf.len() >= INIT_CONTROL_RESPONSE_LEN);
 
-        // Inidicate the Protocol Handler that it should initialize.
+        // Check whether the Protocol Handler is already initialized.  If so
+        // we will set the InitStatus appropriately.  We do this before we
+        // signal to the Protocol Handler to initialize.
+        let initialized = get_protocol_init();
+
+        // Indicate the Protocol Handler that it should initialize.
         self.set_action(ProtocolAction::Initialize);
 
         // Build the response.
@@ -337,11 +344,18 @@ impl Control {
 
         // Byte 2 contains any initialization status flags.
         buf[2] = InitStatus::NONE.bits();
-
-        // TO DO - we should query ProtocolHandler to figure out:
-        // - whether there was an unclean shutdown, InitStatus::DOING_RESET
-        // - whether an IEEE-488 device is present, InitStatus::IEEE488_PRESENT
-        // - whether a tape is present, InitStatus::TAPE_PRESENT
+        if initialized {
+            trace!("Device was not shutdown cleanly");
+            buf[2] |= InitStatus::NOT_SHUTDOWN.bits();
+        }
+        if get_ieee_present() {
+            trace!("IEEE-488 device is present");
+            buf[2] |= InitStatus::IEEE488_PRESENT.bits();
+        }
+        if get_tape_present() {
+            trace!("Tape device is present");
+            buf[2] |= InitStatus::TAPE_PRESENT.bits();
+        }
     }
 }
 

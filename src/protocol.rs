@@ -7,6 +7,7 @@
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
 use bitflags::bitflags;
+use core::sync::atomic::{AtomicBool, Ordering};
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
@@ -26,7 +27,7 @@ use crate::constants::{
 };
 use crate::display::{update_status, DisplayType};
 use crate::driver::{
-    abort, clear_abort, driver_in_use, raw_read_task, raw_write_task, Driver, ProtocolDriver,
+    abort, clear_abort, driver_in_use, raw_read_task, raw_write_task, Driver, ProtocolDriver, DriverError, 
     DRIVER,
 };
 use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
@@ -42,6 +43,18 @@ use crate::watchdog::{feed_watchdog, register_task, TaskId};
 /// Handler (which sends signals) run on different cores.
 pub static PROTOCOL_ACTION: Signal<CriticalSectionRawMutex, ProtocolAction> = Signal::new();
 
+// Static indicating whether the ProtocolHandler has been initialized yet, or
+// not.  Accessed via helper functions
+static PROTOCOL_INIT: AtomicBool = AtomicBool::new(false);
+
+// Static indicating whether an IEEE-488 device is present on the bus.  This
+// is accessed via helper functions.
+static IEEE_PRESENT: AtomicBool = AtomicBool::new(false);
+
+// Static indicating whether a tape device is present.  This is accessed via
+// helper functions.
+static TAPE_PRESENT: AtomicBool = AtomicBool::new(false);
+
 // A channel for Bulk to send read data from the OUT endpoint into, and then
 // send it to the ProtocolHandler.
 pub static WRITE_DATA_CHANNEL: Channel<
@@ -49,27 +62,6 @@ pub static WRITE_DATA_CHANNEL: Channel<
     (usize, [u8; MAX_EP_PACKET_SIZE_USIZE]),
     READ_DATA_CHANNEL_SIZE,
 > = Channel::new();
-
-// ProtocolState is used by ProtocolHandler to store its state.
-#[derive(PartialEq)]
-enum ProtocolState {
-    // The protcocol handler is initialized, and will accept Bulk transfers.
-    Initialized,
-
-    // The protocol handler is uninitialized, and will not accept Bulk
-    // transfers.
-    Uninitialized,
-}
-
-// Implement Format for ProtocolState so it can be printed with defmt.
-impl defmt::Format for ProtocolState {
-    fn format(&self, f: defmt::Formatter) {
-        match self {
-            ProtocolState::Initialized => defmt::write!(f, "Initialized"),
-            ProtocolState::Uninitialized => defmt::write!(f, "Uninitialized"),
-        }
-    }
-}
 
 /// ProtocolAction is used to flag to the ProtocolHandler that there is a
 /// state change requested.  This is driven by the Control handler based on
@@ -99,9 +91,6 @@ impl defmt::Format for ProtocolAction {
 /// are signalled via ProtocolAction.
 #[allow(dead_code)]
 pub struct ProtocolHandler {
-    // The state of the ProtocolHandler.
-    state: ProtocolState,
-
     // The IN endpoint to use to send status responses and READ data.
     write_ep: Endpoint<'static, USB, In>,
 
@@ -128,8 +117,10 @@ impl ProtocolHandler {
         // Get the GPIOs for all bus types
         let (gpios, iec_pins, ieee_pins) = Self::get_gpios().await;
 
+        // Set the protocol init static to false
+        set_protocol_init(false);
+
         Self {
-            state: ProtocolState::Uninitialized,
             write_ep,
             core,
             iec_pins,
@@ -219,6 +210,11 @@ impl ProtocolHandler {
         // Create the IEC driver
         let iec_driver = IecDriver::new(iec_bus);
 
+        // Test for the IEEE-488 device and tape
+        // TODO
+        set_ieee_present(false);
+        set_tape_present(false);
+
         // Create the generic driver object
         Driver::Iec(iec_driver)
     }
@@ -307,7 +303,7 @@ impl ProtocolHandler {
 
             // We can only reset the ProtocolHandler when it's initialized.
             ProtocolAction::Reset => {
-                if self.state == ProtocolState::Initialized {
+                if get_protocol_init() {
                     self.reset().await;
                 } else {
                     info!("Received Reset action when not initialized - ignoring");
@@ -382,7 +378,10 @@ impl ProtocolHandler {
             }
         };
 
-        info!("Received Bulk OUT request: {} 0x{:02x} 0x{:02x} 0x{:02x}", command.command, command.bytes[1], command.bytes[2], command.bytes[3]);
+        info!(
+            "Received Bulk OUT request: {} 0x{:02x} 0x{:02x} 0x{:02x}",
+            command.command, command.bytes[1], command.bytes[2], command.bytes[3]
+        );
 
         // See if the driver is currently locked - this means that a command
         // is in progress, so we can't handle this one.
@@ -397,7 +396,9 @@ impl ProtocolHandler {
             CommandType::Write => {
                 trace!(
                     "Host to WRITE {} bytes, protocol {}, {}",
-                    command.len, command.protocol, command.flags
+                    command.len,
+                    command.protocol,
+                    command.flags
                 );
 
                 if !command.protocol.supported() {
@@ -440,7 +441,8 @@ impl ProtocolHandler {
             CommandType::Read => {
                 trace!(
                     "Host to READ {} bytes, protocol {}",
-                    command.len, command.protocol
+                    command.len,
+                    command.protocol
                 );
 
                 if !command.protocol.supported() {
@@ -531,7 +533,8 @@ impl ProtocolHandler {
                 let release = command.bytes[2];
                 trace!(
                     "IEC Set/Release - set: 0x{:02x}, release: 0x{:02x}",
-                    set, release
+                    set,
+                    release
                 );
                 DRIVER
                     .lock()
@@ -596,19 +599,32 @@ impl ProtocolHandler {
     // cleared.
     async fn initialize(&mut self) {
         debug!("Protocol Handler - initialized");
-        self.state = ProtocolState::Initialized;
 
-        UsbDataTransfer::lock_clear().await;
+        if get_protocol_init() {
+            // If we receive an initialization request when we're already
+            // initialized, that means the previous communication from a host
+            // terminated uncleanly (no uninitialize was issued).  Hence we
+            // reset the bus in order to clear its state.
+            info!("Received initialize request without being shutdown first - reset bus");
+            self.reset().await;
 
+            // No need to clear data transfers - reset() does that
+        } else {
+            set_protocol_init(true);
+            UsbDataTransfer::lock_clear().await;
+        }
+
+        // (Re-)initialize the driver
         self.init_driver().await;
 
+        // Set the display status
         update_status(DisplayType::Active);
     }
 
     // Uninitialize the ProtocolHandler.  Any outstanding transfer is cleared.
     async fn uninitialize(&mut self) {
         debug!("Protocol Handler - uninitialized");
-        self.state = ProtocolState::Uninitialized;
+        set_protocol_init(false);
 
         UsbDataTransfer::lock_clear().await;
 
@@ -629,8 +645,15 @@ impl ProtocolHandler {
 
         // Reset the bus
         if let Err(e) = guard.as_mut().unwrap().reset(false).await {
-            warn!("Hit error reseting the bus {}", e);
-            update_status(DisplayType::Error);
+            match e {
+                DriverError::Timeout => {
+                    debug!("Timeout reseting the bus - expected if no devices present");
+                }
+                _ => {
+                    warn!("Hit error reseting the bus {}", e);
+                    update_status(DisplayType::Error);
+                }
+            }
         }
 
         // Clear out any existing transfers
@@ -873,8 +896,13 @@ pub async fn protocol_handler_task() -> ! {
     // Register with the watchdog
     register_task(TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER);
 
-    // Initialize the ProtocolHandler
-    protocol_handler.initialize().await;
+    // We don't want to perform a full ProtocolHandler initialize at this
+    // stage, as otherwise, when the user sends an Init control request we'll
+    // always reset the bus.  However, we _do_ want to initialize the driver
+    // here, as that will detect whether there's an IEEE-488 or tape device
+    // present, so that information will be in hand for when an Init control
+    // request comes in.
+    protocol_handler.init_driver().await;
 
     // Start the protocol handling loop
     let mut next_log_instant = Instant::now();
@@ -900,6 +928,56 @@ pub async fn protocol_handler_task() -> ! {
         // Pause to allow other tasks to run
         Timer::after(PROTOCOL_LOOP_TIMER).await;
     }
+}
+
+/// Helper function to get ProtocolHandler state - required by Control Handler
+/// to determine what to indicate in resonse to an Init command.
+pub fn get_protocol_init() -> bool {
+    PROTOCOL_INIT.load(Ordering::Relaxed)
+}
+
+// Helper function to set ProtocolHandler state - used internally to set the
+// initialized status.
+fn set_protocol_init(value: bool) {
+    PROTOCOL_INIT.store(value, Ordering::Relaxed);
+}
+
+/// Helper function to determine if an IEEE-488 device is present.  This is
+/// used by the Control Handler indicate in response to an Init command.
+pub fn get_ieee_present() -> bool {
+    IEEE_PRESENT.load(Ordering::Relaxed)
+}
+
+// Helper function to set the IEEE-488 device present status.  Used internally
+// to set the IEEE-488 device present status.
+fn set_ieee_present(value: bool) {
+    IEEE_PRESENT.store(value, Ordering::Relaxed);
+}
+
+/// Helper function to determine if a tape device is present.  This is used by
+/// the Control Handler indicate in response to an Init command.
+pub fn get_tape_present() -> bool {
+    TAPE_PRESENT.load(Ordering::Relaxed)
+}
+
+// Helper function to set the tape device present status.  Used internally to
+// set the tape device present status.
+fn set_tape_present(value: bool) {
+    TAPE_PRESENT.store(value, Ordering::Relaxed);
+}
+
+/// Helper function to signal to the ProtocolHandler that an action is
+/// required.  This is used by the Control Handler.
+pub fn set_protocol_action(action: ProtocolAction) {
+    PROTOCOL_ACTION.signal(action);
+}
+
+/// Helper function to retrieve a signal for the ProtocolHandler.  This is
+/// used internally, and by the Control Handler to retrieve an action.
+///
+/// This takes the current signal, so a new signal must be set if required.
+pub fn take_protocol_action() -> Option<ProtocolAction> {
+    PROTOCOL_ACTION.try_take()
 }
 
 // The type of Command received from the host.

@@ -314,7 +314,10 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
                         UsbTransferResponse::Ok(count)
                     }
                     Err((e, count)) => {
-                        info!("Driver write task completed with error: {}, wrote {} bytes", e, count);
+                        info!(
+                            "Driver write task completed with error: {}, wrote {} bytes",
+                            e, count
+                        );
                         e.into_usb_transfer_response(count)
                     }
                 }
@@ -366,7 +369,10 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
                         UsbTransferResponse::Ok(count)
                     }
                     Err((e, count)) => {
-                        info!("Driver read task completed with error: {}, wrote {} bytes", e, count);
+                        info!(
+                            "Driver read task completed with error: {}, wrote {} bytes",
+                            e, count
+                        );
                         e.into_usb_transfer_response(count)
                     }
                 }

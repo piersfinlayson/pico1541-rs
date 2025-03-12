@@ -102,14 +102,26 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // once that's happened, in order to feed it).
     Watchdog::create_static(p_watchdog);
 
+    // See [`task.rs`] for an explanation of the multi-core strategy.
+
+    // Spawn the watchdog task.
+    //
+    // It's fine to spawn the watchdog before the other tasks, because the
+    // other tasks themselves register with the watchdog when starting up.
+    // Therefore, they should be running and feeding the watchdog before it
+    // starts checking.
+    spawn_or_reboot_yield(spawner.spawn(watchdog_task()), "Watchdog").await;
+
     // Now attempt to initialize WiFi and spawm the WiFi tasks.  If this
     // hardware doesn't support WiFi, WiFi::init() will return None, so we
-    // won't spawn the WiFi tasks.
+    // won't spawn the WiFi tasks.  We want this done before we spawn Status
+    // Display, as that will use the WiFi GPIO for the status LED (if WiFI
+    // is supported).
     if let Some(wifi_args) = wifi.init().await {
         spawn_wifi(&spawner, wifi_args).await;
     }
 
-    // Spawn the status display task.  We do this before the other tasks, as
+    // Spawn the status display task.  We do this before any other tasks, as
     // once they are created they may try to update the status display.
     // However, it must be done after the GPIO static is created, as it needs
     // to retrieve the appropriate pin.
@@ -119,16 +131,8 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // because Bulk needs the endpoints from the USB Stack creation.
     let usb = UsbStack::create_static(p_usb, usb_serial).await;
 
-    // Spawn the Status Display and USB tasks on core 0.
-    //
-    // It's fine to spawn the watchdog before the other tasks, because the
-    // other tasks themselves register with the watchdog when starting up.
-    // Therefore, they should be running and feeding the watchdog before it
-    // starts checking.
-    //
-    // See [`task.rs`] for an explanation of the multi-core strategy.
-    spawn_or_reboot_yield(spawner.spawn(watchdog_task()), "Watchdog").await;
-
+    // Spawn the USB stack.  The Bulk task will be spawned as part of
+    // launching core 1.
     spawn_or_reboot_yield(spawner.spawn(usb_task(usb)), "USB").await;
 
     // Spawn the core1 task to start the Bulk task and the core Commodore
@@ -147,6 +151,11 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
 // Defmt panic handler
 pub fn defmt_panic_handler() -> ! {
     error!("Hit defmt panic handler");
+
+    let wait_until = embassy_time::Instant::now() + embassy_time::Duration::from_millis(1000);
+    while embassy_time::Instant::now() < wait_until {
+        cortex_m::asm::nop();
+    }
 
     // Panic (and reboot) in release mode
     #[cfg(not(debug_assertions))]
