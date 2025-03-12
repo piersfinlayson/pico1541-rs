@@ -1100,7 +1100,11 @@ pub enum ProtocolType {
 impl ProtocolType {
     /// Whether the Protocol is supported
     fn supported(&self) -> bool {
-        matches!(self, Self::Cbm)
+        matches!(self, Self::Cbm |
+            Self::S1 |
+            Self::S2 |
+            Self::PP |
+            Self::P2)
     }
 
     fn write_send_status(&self) -> bool {
