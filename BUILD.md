@@ -47,7 +47,6 @@ Clone this project:
 ```bash
 git clone https://github.com/piersfinlayson/pico1541-rs
 cd pico1541-rs
-cargo run
 ```
 
 You have a number of options when building.  You can choose:
@@ -68,6 +67,8 @@ Scripts to build and run the chosen type of firmware are provided and are recomm
 ./build.sh pico1541 pico2 release  # Builds pico1541 for Pico 2, release build
 ./run.sh pico1541 pico             # Flashes pico1541 for Pico, debug
 ```
+
+Sometimes the flashing process fails - this is because the erase step causes the device to panic and reboot in DFU/BOOTSEL mode.  This interrupts flashing.  Run the command again, and it should succeed the second time.
 
 Alternatively you can use ```cargo build``` and ```cargo run``` directly.  In this case, as well as the binary and features, in the Pico 2 case you need to specify the correct target.  Some examples:
 
