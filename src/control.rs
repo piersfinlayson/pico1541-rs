@@ -60,7 +60,7 @@ impl Handler for Control {
     fn enabled(&mut self, enabled: bool) {
         match enabled {
             true => {
-                info!("USB device enabled");
+                debug!("USB device enabled");
             }
             false => {
                 info!("USB device disabled");
@@ -72,20 +72,20 @@ impl Handler for Control {
 
     /// Called after a USB reset after the bus reset sequence is complete.
     fn reset(&mut self) {
-        info!("USB device reset complete");
+        debug!("USB device reset complete");
         self.set_action(ProtocolAction::Uninitialize);
     }
 
     /// Called when the host has set the address of the device to `addr`.
     fn addressed(&mut self, addr: u8) {
-        info!("USB device addressed: {}", addr);
+        debug!("USB device addressed: {}", addr);
     }
 
     /// Called when the host has enabled or disabled the configuration of the device.
     fn configured(&mut self, configured: bool) {
         match configured {
-            true => info!("USB device configuration enabled"),
-            false => info!("USB device configuration disabled"),
+            true => debug!("USB device configuration enabled"),
+            false => debug!("USB device configuration disabled"),
         }
         update_status(DisplayType::Init);
         self.set_action(ProtocolAction::Uninitialize);
@@ -95,11 +95,11 @@ impl Handler for Control {
     fn suspended(&mut self, suspended: bool) {
         match suspended {
             true => {
-                info!("USB device suspended");
+                debug!("USB device suspended");
                 update_status(DisplayType::Init);
             }
             false => {
-                info!("USB device resumed");
+                debug!("USB device resumed");
             }
         }
 
@@ -171,7 +171,7 @@ impl Control {
     // Check the request is valid and supported.
     fn check_request(&self, req: Request, dir: Direction) -> Result<ControlRequest, ControlError> {
         // Trace the request.
-        debug!("Control request to interface: 0x{:02x}, request: {:#x}, request type: {}, recipient: {}, direction: {}",
+        info!("Control request to interface: 0x{:02x}, request: {:#x}, request type: {}, recipient: {}, direction: {}",
             req.index, req.request, req.request_type, req.recipient, dir);
 
         // Only handle Class request types to an Interface.
@@ -222,7 +222,7 @@ impl Control {
             }
             ControlRequest::TapBreak => {
                 // TODO - implement
-                info!("{}", request);
+                info!("{} - unsupported, ignoring", request);
             }
             _ => unreachable!(),
         };

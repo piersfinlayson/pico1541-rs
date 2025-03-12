@@ -72,7 +72,7 @@ impl Watchdog {
         if idx < TaskId::Num as usize {
             self.tasks[idx] = Some(task);
         }
-        info!("Watchdog - registered task: {}", task_id);
+        debug!("Watchdog - registered task: {}", task_id);
     }
 
     /// De-registers a task with this watchdog.  The watchdog will not require
@@ -83,7 +83,7 @@ impl Watchdog {
         if idx < TaskId::Num as usize {
             self.tasks[idx] = None;
         }
-        info!("Watchdog - deregistered task: {}", task_id);
+        debug!("Watchdog - deregistered task: {}", task_id);
     }
 
     /// Feed the watchdog from a specific task
@@ -107,11 +107,11 @@ impl Watchdog {
         // Start the hardware watchdog
         self.hw_watchdog.start(WATCHDOG_TIMER);
 
-        info!("Watchdog started");
+        debug!("Watchdog started");
     }
 
     fn trigger_reset(&mut self) -> ! {
-        info!("Trigger reset");
+        warn!("Trigger reset");
 
         // Brief pause to allow log to be produced
         block_ms!(10);
@@ -236,7 +236,7 @@ pub async fn watchdog_task() -> ! {
 /// Called to perform a standard device reboot.  (Normally as in not entering
 /// BOOTSEL/DFU mode.)
 pub fn reboot_normal() -> ! {
-    info!("Rebooting");
+    warn!("Rebooting");
 
     // Try rebooting using the watchdog
     WATCHDOG.lock(|w| {

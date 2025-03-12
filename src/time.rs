@@ -1,5 +1,5 @@
 //! This file implements custom timing functions and macros used by pico1541
-//! 
+//!
 //! In some cases we reimplement embassy-time functions, primarily to make it
 //! clear what they are doing under the covers, but in some cases (like
 //! delay_ns) because we can't get sub 1us delays with the embassy-time code
@@ -13,7 +13,7 @@ use embassy_time::{Duration, Instant};
 
 /// Functiom to block until a specific instant.  This is similar to the
 /// embassy-time::Delay::block_for function.
-/// 
+///
 /// We always inline it to reduce function call/return overhead, as this is
 /// typically used in timing critical functions
 #[inline(always)]
@@ -23,7 +23,7 @@ pub fn block_until(expires: Instant) {
 
 /// Function to block for a specific Duration.  This is similar to the
 /// embassy-time::Delay::block_for function.
-/// 
+///
 /// We always inline it to reduce function call/return overhead, as this is
 /// typically used in timing critical functions
 #[inline(always)]
@@ -36,7 +36,7 @@ pub fn block_for(duration: Duration) {
 /// and ~6 on the Pico 2, but it's better than using embassy-time, which can't
 /// handle below the embassy-rp Pico tickrate of 1MHz.  Hence we need to
 /// implement something ourselves.
-/// 
+///
 /// We implement as a macro rather than a function to allow $ns to be used in a
 /// compile time assert.
 macro_rules! block_ns {
@@ -76,7 +76,7 @@ pub(crate) use block_ns;
 macro_rules! block_us {
     ($us:expr) => {
         crate::time::block_for(Duration::from_micros($us))
-    }
+    };
 }
 pub(crate) use block_us;
 
@@ -84,7 +84,7 @@ pub(crate) use block_us;
 macro_rules! block_ms {
     ($ms:expr) => {
         crate::time::block_for(Duration::from_millis($ms))
-    }
+    };
 }
 pub(crate) use block_ms;
 
@@ -92,7 +92,7 @@ pub(crate) use block_ms;
 macro_rules! iec_delay {
     () => {
         block_us!(2)
-    }
+    };
 }
 pub(crate) use iec_delay;
 
@@ -129,7 +129,6 @@ macro_rules! yield_for {
 }
 pub(crate) use yield_for;
 
-
 pub mod iec {
     //! IEC protocol timers
     #![allow(dead_code)]
@@ -143,14 +142,14 @@ pub mod iec {
     /// Total time to wait for the bus to be free, unless we're waiting
     /// forever.
     pub const BUS_FREE_TIMEOUT: Duration = Duration::from_millis(1500);
-    
+
     /// Time to wait for device to release DATA, after being told to LISTEN.
     pub const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(1);
-    
+
     /// Time to wait for CLK to be pulled down by the drive after telling it
     /// to enter TALK.
     pub const WRITE_TALK_CLK_TIMEOUT: Duration = Duration::from_secs(1);
-    
+
     /// Timeto wait for CLK to be released at the beginning on the main CBM
     /// protocol read loop, before reading a byte.
     pub const READ_CLK_TIMEOUT: Duration = Duration::from_secs(1);
@@ -167,7 +166,7 @@ pub mod iec {
 
     // Max listener hold off time
     // pub const IEC_T_LH: u64 = infinite;
-    
+
     /// Typical non-EOI response to RFD time
     pub const IEC_T_NE: u64 = 40;
 

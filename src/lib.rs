@@ -10,6 +10,7 @@
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
+
 #![no_std]
 #![no_main]
 

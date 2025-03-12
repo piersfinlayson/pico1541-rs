@@ -139,7 +139,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     let core = embassy_rp::pac::SIO.cpuid().read();
     let mut ticker = Ticker::every(LOOP_LOG_INTERVAL);
     loop {
-        info!("Core{}: Main loop", core);
+        trace!("Core{}: Main loop", core);
         ticker.next().await;
     }
 }

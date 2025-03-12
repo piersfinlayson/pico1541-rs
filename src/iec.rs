@@ -16,10 +16,13 @@ use crate::constants::{
 };
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::{Dio, ProtocolFlags, ProtocolType};
+use crate::time::iec::{
+    BUS_FREE_CHECK_YIELD, BUS_FREE_TIMEOUT, FOREVER_TIMEOUT, IEC_T_BB, IEC_T_NE, IEC_T_R, IEC_T_S,
+    IEC_T_V, LISTENER_WAIT_INTERVAL, READ_CLK_TIMEOUT, WRITE_TALK_CLK_TIMEOUT,
+};
+use crate::time::{block_ns, block_us, iec_delay, yield_for, yield_ms, yield_us};
 use crate::transfer::UsbDataTransfer;
 use crate::watchdog::{feed_watchdog, TaskId};
-use crate::time::{iec_delay, block_us, block_ns, yield_us, yield_ms, yield_for};
-use crate::time::iec::{IEC_T_NE, IEC_T_BB, IEC_T_R, IEC_T_S, IEC_T_V, BUS_FREE_CHECK_YIELD, BUS_FREE_TIMEOUT, LISTENER_WAIT_INTERVAL, WRITE_TALK_CLK_TIMEOUT, READ_CLK_TIMEOUT, FOREVER_TIMEOUT};
 
 // IEC protocol bit masks - these are used by external applications
 pub const IEC_DATA: u8 = 0x01;
@@ -37,7 +40,6 @@ pub const IO_ATN: u8 = IEC_ATN;
 pub const IO_RESET: u8 = IEC_RESET;
 pub const IO_SRQ: u8 = IEC_SRQ;
 
-
 // Timer macros, used for simple inlines.
 //
 // We have two choices for a delay:
@@ -53,8 +55,6 @@ pub const IO_SRQ: u8 = IEC_SRQ;
 //
 // Irrespective of which macro is used, this module must ensure watchdog is
 // fed, should it be delaying for a long time.
-
-
 
 /// Represents a single bidirectional IEC bus line using separate input/output pins
 pub struct Line {

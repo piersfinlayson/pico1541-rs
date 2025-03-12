@@ -72,9 +72,6 @@ cortex-m-rt = "0.7"
 # Required for Debug Probe panic support
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 
-# Required for embasse_time::Delay support
-embedded-hal = "1.0"
-
 # Allows us to handle bitflags gracefully
 bitflags = "2.8"
 

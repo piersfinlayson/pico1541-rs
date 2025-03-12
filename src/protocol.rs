@@ -382,7 +382,7 @@ impl ProtocolHandler {
             }
         };
 
-        info!("New command: {}", command.command);
+        info!("New command received: {}", command.command);
 
         // See if the driver is currently locked - this means that a command
         // is in progress, so we can't handle this one.
@@ -593,7 +593,7 @@ impl ProtocolHandler {
     // (Re-)Initialize the ProtocolHandler.  Any oustanding transfer is
     // cleared.
     async fn initialize(&mut self) {
-        info!("Protocol Handler - initialized");
+        debug!("Protocol Handler - initialized");
         self.state = ProtocolState::Initialized;
 
         UsbDataTransfer::lock_clear().await;
@@ -605,7 +605,7 @@ impl ProtocolHandler {
 
     // Uninitialize the ProtocolHandler.  Any outstanding transfer is cleared.
     async fn uninitialize(&mut self) {
-        info!("Protocol Handler - uninitialized");
+        debug!("Protocol Handler - uninitialized");
         self.state = ProtocolState::Uninitialized;
 
         UsbDataTransfer::lock_clear().await;
@@ -617,7 +617,7 @@ impl ProtocolHandler {
 
     // Reset the ProtocolHandler.  Any outstanding transfer is cleared.
     async fn reset(&mut self) {
-        info!("Protocol Handler - reset");
+        debug!("Protocol Handler - reset");
 
         // Initialize the driver if not already initialized
         let mut guard = DRIVER.lock().await;
@@ -858,7 +858,7 @@ pub async fn protocol_handler_task() -> ! {
     // Read the core ID.  Tasks are allocated to cores at compile time with
     // embassy, so we only need to do this once and store in ProtocolHandler.
     let core = embassy_rp::pac::SIO.cpuid().read();
-    info!("Core{}: Protocol Handler task started", core);
+    debug!("Core{}: Protocol Handler task started", core);
 
     // Create and spawn the ProtocolHandler task.
     let write_ep = WRITE_EP
@@ -879,7 +879,7 @@ pub async fn protocol_handler_task() -> ! {
     loop {
         let now = Instant::now();
         if now >= next_log_instant {
-            info!("Core{}: Protocol loop", protocol_handler.core);
+            trace!("Core{}: Protocol loop", protocol_handler.core);
             next_log_instant += LOOP_LOG_INTERVAL;
         }
 
