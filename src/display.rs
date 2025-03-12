@@ -251,6 +251,6 @@ pub async fn status_task() -> ! {
 pub fn update_status(display: DisplayType) {
     // It's OK to overwrite the last status, if it hasn't been applied yet, as
     // this new status should supercede the old one.
-    debug!("Updating status to {}", display);
+    trace!("Updating display status to {}", display);
     STATUS_DISPLAY.signal(display);
 }

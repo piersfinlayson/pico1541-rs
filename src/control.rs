@@ -66,7 +66,6 @@ impl Handler for Control {
                 trace!("USB device disabled");
             }
         }
-        update_status(DisplayType::Init);
         self.set_action(ProtocolAction::Uninitialize);
     }
 
@@ -87,7 +86,6 @@ impl Handler for Control {
             true => trace!("USB device configuration enabled"),
             false => trace!("USB device configuration disabled"),
         }
-        update_status(DisplayType::Init);
         self.set_action(ProtocolAction::Uninitialize);
     }
 
@@ -105,7 +103,6 @@ impl Handler for Control {
 
         // It could be argued that we shoud store off the current state and
         // reapply it after resume.  But we're not going to do that.
-        update_status(DisplayType::Init);
         self.set_action(ProtocolAction::Uninitialize);
     }
 
