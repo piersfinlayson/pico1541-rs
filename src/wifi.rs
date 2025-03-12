@@ -46,7 +46,7 @@ use crate::constants::{
     WIFI_DIO_PIN,
 };
 use crate::gpio::GPIO;
-use crate::task::spawn_or_reboot;
+use crate::task::spawn_or_reboot_yield;
 use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
 //
@@ -282,13 +282,13 @@ pub async fn spawn_wifi(
     let (mut control, runner) = wifi_args;
 
     // Spawn the WiFi task.
-    spawn_or_reboot(spawner.spawn(cyw43_task(runner)), "cyw43 WiFi");
+    spawn_or_reboot_yield(spawner.spawn(cyw43_task(runner)), "cyw43 WiFi").await;
 
     // Now the WiFi task is spwaned, initialize the WiFi control object..
     init_control(&mut control).await;
 
     // Spawn the control task.
-    spawn_or_reboot(spawner.spawn(wifi_control_task(control)), "WiFi Control");
+    spawn_or_reboot_yield(spawner.spawn(wifi_control_task(control)), "WiFi Control").await;
 }
 
 /// Method to run the WiFi stack.

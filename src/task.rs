@@ -14,6 +14,7 @@ use static_cell::{ConstStaticCell, StaticCell};
 use crate::bulk::bulk_task;
 use crate::constants::CORE1_STACK_SIZE;
 use crate::protocol::protocol_handler_task;
+use crate::time::yield_us;
 use crate::watchdog::reboot_normal;
 
 // Threading and tasks model
@@ -67,6 +68,11 @@ pub fn core1_spawn(p_core1: CORE1) {
             spawn_or_reboot(spawner.spawn(core1_main()), "Core 1");
         })
     });
+
+    // We don't need to yield after spawning core 1, as it will start running
+    // immediately.  We also don't need to yield after the above embeddeed
+    // spawn_or_reboot, because there will be nothing else to run on core 1
+    // other than what we spawned.
 }
 
 // Initial function for core 1.  This gets run using the executor on core 1,
@@ -82,10 +88,10 @@ pub async fn core1_main() {
 
     // Spawn the Protocol Handler task.  Do this first, so the Bulk runner
     // task can access the protocol handler.
-    spawn_or_reboot(spawner.spawn(protocol_handler_task()), "Protocol Handler");
+    spawn_or_reboot_yield(spawner.spawn(protocol_handler_task()), "Protocol Handler").await;
 
     // Spawn the Bulk runner task.
-    spawn_or_reboot(spawner.spawn(bulk_task()), "Bulk");
+    spawn_or_reboot_yield(spawner.spawn(bulk_task()), "Bulk").await;
 }
 
 /// Method to spawn tasks.  Can be called on either core.
@@ -99,8 +105,25 @@ pub async fn core1_main() {
 ///
 /// Example:
 /// ```ignore
-/// spawn_or_reboot(spawner.spawn(my_task()), "my_task");
+/// spawn_or_reboot(spawner.spawn(my_task()), "my_task").await;
 /// ```
+pub async fn spawn_or_reboot_yield<T, E: defmt::Format>(
+    spawn_result: Result<T, E>,
+    task_name: &str,
+) {
+    spawn_or_reboot(spawn_result, task_name);
+
+    // Yield to allow the task that has just been spawned to actually be
+    // creatd and run.  We chose 250us as 100us seems to give enough time,
+    // and 50us doesn't.  So we added some headroom onto 100us.  This method
+    // is only used at start of delay, and delaying boot by 250us for each
+    // task that is started is not meaningful.
+    yield_us!(250);
+}
+
+/// Syncronous version of spawn_or_reboot_yield.  This is used when spawning
+/// the first task on core 1, as we're in a non-async context there, and it's
+/// not necessary to yield, as there's nothing else on the core to run.
 pub fn spawn_or_reboot<T, E: defmt::Format>(spawn_result: Result<T, E>, task_name: &str) {
     match spawn_result {
         Ok(_) => {

@@ -15,7 +15,7 @@ use crate::constants::LOOP_LOG_INTERVAL;
 use crate::dev_info::get_serial;
 use crate::display::status_task;
 use crate::gpio::Gpio;
-use crate::task::{core1_spawn, spawn_or_reboot};
+use crate::task::{core1_spawn, spawn_or_reboot_yield};
 use crate::usb::{usb_task, UsbStack};
 use crate::watchdog::{watchdog_task, Watchdog};
 use crate::wifi::{spawn_wifi, WiFi};
@@ -113,7 +113,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // once they are created they may try to update the status display.
     // However, it must be done after the GPIO static is created, as it needs
     // to retrieve the appropriate pin.
-    spawn_or_reboot(spawner.spawn(status_task()), "Status Display");
+    spawn_or_reboot_yield(spawner.spawn(status_task()), "Status Display").await;
 
     // Create the USB stack and the Bulk object.  We do this at the same time
     // because Bulk needs the endpoints from the USB Stack creation.
@@ -127,9 +127,9 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // starts checking.
     //
     // See [`task.rs`] for an explanation of the multi-core strategy.
-    spawn_or_reboot(spawner.spawn(watchdog_task()), "Watchdog");
+    spawn_or_reboot_yield(spawner.spawn(watchdog_task()), "Watchdog").await;
 
-    spawn_or_reboot(spawner.spawn(usb_task(usb)), "USB");
+    spawn_or_reboot_yield(spawner.spawn(usb_task(usb)), "USB").await;
 
     // Spawn the core1 task to start the Bulk task and the core Commodore
     // protocol handling.
