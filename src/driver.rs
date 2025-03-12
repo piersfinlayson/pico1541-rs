@@ -90,7 +90,7 @@ pub trait ProtocolDriver {
     ///
     /// # Returns
     /// The number of bytes actually read or an error
-    async fn raw_read(&mut self, protocol: ProtocolType, len: u16) -> Result<u16, DriverError>;
+    async fn raw_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError>;
 
     /// Wait for a specific bus line to reach the desired state.
     ///
@@ -158,11 +158,11 @@ impl ProtocolDriver for Driver {
         }
     }
 
-    async fn raw_read(&mut self, protocol: ProtocolType, len: u16) -> Result<u16, DriverError> {
+    async fn raw_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError> {
         match self {
-            Driver::Iec(driver) => driver.raw_read(protocol, len).await,
-            Driver::Ieee(driver) => driver.raw_read(protocol, len).await,
-            Driver::Tape(driver) => driver.raw_read(protocol, len).await,
+            Driver::Iec(driver) => driver.raw_read(len, protocol).await,
+            Driver::Ieee(driver) => driver.raw_read(len, protocol).await,
+            Driver::Tape(driver) => driver.raw_read(len, protocol).await,
         }
     }
 
@@ -288,7 +288,7 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
             Some(guard) => {
                 // Call raw_read and set the response appropriately.
                 guard
-                    .raw_read(protocol, len)
+                    .raw_read(len, protocol)
                     .await
                     .map(|_| UsbTransferResponse::Ok)
                     .unwrap_or(UsbTransferResponse::Error)

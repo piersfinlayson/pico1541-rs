@@ -10,7 +10,7 @@ use bitflags::bitflags;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
-use embassy_rp::gpio::Flex;
+use embassy_rp::gpio::{Flex, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Endpoint, In};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
@@ -204,16 +204,16 @@ impl ProtocolHandler {
             self.gpios[self.iec_pins.srq_out as usize].take().unwrap(),
         );
 
-        let mut dio_pins: [Option<Dio>; 8] = [const { None }; 8];
-        for (ii, dio_pin) in dio_pins.iter_mut().enumerate() {
-            *dio_pin = Some(Dio {
+        // Create array of Digital IO pins
+        let dios = core::array::from_fn(|ii|
+            Dio {
                 pin_num: self.ieee_pins.d_io[ii],
                 pin: Some(self.gpios[self.ieee_pins.d_io[ii] as usize].take().unwrap()),
-            });
-        }
+            }
+        );
 
         // Create the bus
-        let iec_bus = IecBus::new(clock_line, data_line, atn_line, reset_line, srq_line, dio_pins);
+        let iec_bus = IecBus::new(clock_line, data_line, atn_line, reset_line, srq_line, dios);
 
         // Create the IEC driver
         let iec_driver = IecDriver::new(iec_bus);
@@ -232,18 +232,11 @@ impl ProtocolHandler {
                     self.gpios[output_pin_num as usize] = output_pin;
                 }
 
-                if let Some(mut dios) = iec.retrieve_dios() {
-                    for dio in dios.iter_mut() {
-                        let mut dio = dio.take().expect("Missing DIO");
-                        let pin_num = dio.pin_num;
-                        let pin = dio.pin.take().expect("Missing DIO pin");
-                        self.gpios[pin_num as usize] = Some(pin);
-                    }
-
-                } else {
-                    warn!("No DIO pins to retrieve from IEC object");
+                for dio in iec.retrieve_dios().iter_mut() {
+                    let pin_num = dio.pin_num;
+                    let pin = dio.pin.take().expect("Missing DIO pin");
+                    self.gpios[pin_num as usize] = Some(pin);
                 }
-
             }
             Driver::Ieee(_) => unimplemented!("IEEE driver not implemented"),
             Driver::Tape(_) => unimplemented!("Tape driver not implemented"),
@@ -1226,3 +1219,30 @@ pub struct Dio {
     pub pin_num: u8,
     pub pin: Option<Flex<'static>>,
 } 
+
+impl Dio {
+    #[inline(always)]
+    pub fn set_output(&mut self, level: bool) {
+        if let Some(pin) = &mut self.pin {
+            pin.set_as_output();
+            match level {
+                true => pin.set_high(),
+                false => pin.set_low(),
+            }
+        } else {
+            warn!("Pin {} not set", self.pin_num);
+        }
+    }
+
+    #[inline(always)]
+    pub fn read_pin(&mut self) -> bool {
+        if let Some(pin) = &mut self.pin {
+            pin.set_as_input();
+            pin.set_pull(Pull::None);
+            pin.is_high()
+        } else {
+            warn!("Pin {} not set", self.pin_num);
+            false
+        }
+    }
+}

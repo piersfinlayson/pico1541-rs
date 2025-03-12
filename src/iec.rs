@@ -204,20 +204,20 @@ pub struct IecBus {
     atn: Line,
     reset: Line,
     srq: Line,
-    dio: Option<[Option<Dio>; 8]>,
+    dio: [Dio; 8],
 }
 
 impl IecBus {
     /// Create a new IEC bus with the specified pins
     #[allow(clippy::too_many_arguments)]
-    pub fn new(clock: Line, data: Line, atn: Line, reset: Line, srq: Line, dio: [Option<Dio>; 8]) -> Self {
+    pub fn new(clock: Line, data: Line, atn: Line, reset: Line, srq: Line, dio: [Dio; 8]) -> Self {
         let mut bus = Self {
             clock,
             data,
             atn,
             reset,
             srq,
-            dio: Some(dio),
+            dio,
         };
 
         // Initialize all pins to released state (similar to board_init_iec)
@@ -236,8 +236,13 @@ impl IecBus {
         ]
     }
 
-    pub fn retrieve_dios(&mut self) -> Option<[Option<Dio>; 8]> {
-        self.dio.take()
+    pub fn retrieve_dios(&mut self) -> [Dio; 8] {
+        core::array::from_fn(|ii| 
+            Dio {
+                pin_num: self.dio[ii].pin_num,
+                pin: self.dio[ii].pin.take(),
+            }
+        )
     }
 
     // DATA line control
@@ -436,12 +441,21 @@ impl ProtocolDriver for IecDriver {
     }
 
     /// Read data from the IEC bus
-    async fn raw_read(&mut self, protocol: ProtocolType, len: u16) -> Result<u16, DriverError> {
+    async fn raw_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError> {
         info!("Raw Read: Protocol: {}, {} bytes requested", protocol, len);
 
         // Check protocol type
         match protocol {
+            // Standard Commodore IEC read 
             ProtocolType::Cbm => self.cbm_read(len).await,
+
+            // Non Commodore IEC read
+            ProtocolType::S1 |
+            ProtocolType::S2 |
+            ProtocolType::PP |
+            ProtocolType::P2 => self.non_cbm_read(len, protocol).await,
+
+            // TODO NibCommand, NibSrq, NibSrqCommand, Tap and TapConfig
             _ => {
                 error!("Raw read: Unsupported protocol type");
                 Err(DriverError::Unsupported)
@@ -885,7 +899,7 @@ impl IecDriver {
             iec_delay!();
             
             // Wait for drive to set CLK high
-            self.loop_and_yield(|| !self.bus.get_clock()).await?;
+            self.loop_and_yield_while(|| !self.bus.get_clock()).await?;
             
             // Send bit a second time
             if (c & 0x80) != 0 {
@@ -895,14 +909,14 @@ impl IecDriver {
             }
             
             // Wait for drive to release CLK
-            self.loop_and_yield(|| self.bus.get_clock()).await?;
+            self.loop_and_yield_while(|| self.bus.get_clock()).await?;
 
             // Set CLK and release DATA
             self.set_release(IO_CLK, IO_DATA).await;
             iec_delay!();
             
             // Wait for device to acknowledge by setting DATA high
-            self.loop_and_yield(|| !self.bus.get_data()).await?;
+            self.loop_and_yield_while(|| !self.bus.get_data()).await?;
 
             // Shift to next bit
             c <<= 1;
@@ -928,7 +942,7 @@ impl IecDriver {
             self.bus.release_atn();
             
             // Wait for CLK to be released (CLK low)
-            self.loop_and_yield(|| self.bus.get_clock()).await?;
+            self.loop_and_yield_while(|| self.bus.get_clock()).await?;
             
             // Send second bit, setting ATN and waiting for CLK set ack
             if (c & 1) != 0 {
@@ -942,7 +956,7 @@ impl IecDriver {
             self.bus.set_atn();
             
             // Wait for CLK to be set (CLK high)
-            self.loop_and_yield(|| !self.bus.get_clock()).await?;
+            self.loop_and_yield_while(|| !self.bus.get_clock()).await?;
         }
         
         // Final release of DATA
@@ -953,36 +967,21 @@ impl IecDriver {
     }
 
     async fn write_p2(&mut self, byte: u8) -> Result<(), DriverError> {
-        self.write_pp_byte(byte).await;
+        self.write_pp_byte(byte);
 
         delay_block_ns!(500);
         
         self.bus.release_clock();
         
         // Wait for DATA to go low
-        self.loop_and_yield(|| self.bus.get_data()).await?;
+        self.loop_and_yield_while(|| self.bus.get_data()).await?;
         
         self.bus.set_clock();
         
         // Wait for DATA to go high
-        self.loop_and_yield(|| !self.bus.get_data()).await?;
+        self.loop_and_yield_while(|| !self.bus.get_data()).await?;
         
         Ok(())
-    }
-
-    async fn write_pp_byte(&mut self, val: u8) {
-        // Iterate through all 8 bits
-        for i in 0..8 {
-            // Get reference to the pin
-            let pin = self.bus.dio.as_mut().unwrap()[i].as_mut().unwrap().pin.as_mut().unwrap();
-            
-            // Set pin high or low based on the corresponding bit in val
-            if (val & (1 << i)) != 0 {
-                pin.set_high();
-            } else {
-                pin.set_low();
-            }
-        }
     }
 
     async fn write_pp(&mut self, data: &[u8]) -> Result<(), DriverError> {
@@ -990,26 +989,235 @@ impl IecDriver {
         assert!(data.len() >= 2);
         
         // Wait for DATA to go high
-        self.loop_and_yield(|| !self.bus.get_data()).await?;
+        self.loop_and_yield_while(|| !self.bus.get_data()).await?;
         
         // Write first byte
-        self.write_pp_byte(data[0]).await;
+        self.write_pp_byte(data[0]);
 
         delay_block_ns!(500);
 
         self.bus.release_clock();
         
         // Wait for DATA to go low
-        self.loop_and_yield(|| self.bus.get_data()).await?;
+        self.loop_and_yield_while(|| self.bus.get_data()).await?;
         
         // Write second byte
-        self.write_pp_byte(data[1]).await;
+        self.write_pp_byte(data[1]);
 
         delay_block_ns!(500);
 
         self.bus.set_clock();
         
         Ok(())
+    }
+
+    // Writes a byte to the parallel port
+    fn write_pp_byte(&mut self, val: u8) {
+        // Iterate through all 8 bits
+        for ii in 0..8 {
+            // Set pin high or low based on the corresponding bit in val
+            self.bus.dio[ii].set_output((val >> ii) & 1 == 1);
+        }
+    }
+
+    async fn non_cbm_read(
+        &mut self,
+        len: u16,
+        protocol: ProtocolType,
+    ) -> Result<u16, DriverError> {
+        // Check we can send bytes before we get started, so we don't have to
+        // pause in the middle of a transfer.  We could just wait for one byte
+        // of space, but we'll wait for enough space for an entire USB packet
+        // as the buffer should be twice that size.
+        UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
+
+        let num_bytes = match protocol {
+            ProtocolType::S1 |
+            ProtocolType::S2 |
+            ProtocolType::P2 => 1,
+            ProtocolType::PP => 2,
+            _ => unreachable!("Non-CBM read: Unsupported protocol type"),
+        };
+
+        let mut count = 0;
+
+        while count < len / num_bytes {
+            // TODO - need some way of knowing when the transfer is being
+            // aborted
+            let mut buf = [0u8; 2];
+
+            // Get the byte(s) to read
+            let size = match protocol {
+                ProtocolType::S1 => self.read_s1(&mut buf).await,
+                ProtocolType::S2 => self.read_s2(&mut buf).await,
+                ProtocolType::PP => self.read_pp(&mut buf).await,
+                ProtocolType::P2 => self.read_p2(&mut buf).await,
+                _ => unreachable!("Non-CBM read: Unsupported protocol type"),
+            }?;
+
+            // Send the data (immediately - don't wait for a full packet)
+            Self::send_data_to_host(&buf[..size], size).await?;
+
+            count += 1;
+        }
+
+        Ok(count * num_bytes as u16)
+    }
+
+    // S1 involves reading a bit at a time, starting with the MSB, as follows:
+    // - Wait for DATA line to be pulled low
+    // - Release CLK
+    // - Pause briefly to allow it to stabilise
+    // - Read CLK - this is our next bit, with MSB first
+    // - Pull DATA low to acknowledge the bit
+    // - Wait for CLK to change
+    // - Release DATA
+    // - Wait for DATA to be pulled low
+    // - Pull CLK low
+    async fn read_s1(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
+        assert!(!data.is_empty());
+
+        let mut byte = 0;
+
+        for _ in 0..8 {
+            // Wait for DATA to be pulled low 
+            self.loop_and_yield_while(|| self.bus.get_data()).await?;
+        
+            // Release the clock
+            self.bus.release_clock();
+            iec_delay!();
+
+            // Get the next bit - we read from MSB to LSB
+            let bit = self.bus.get_clock();
+            byte = (byte >> 1) | ((bit as u8) << 7);
+
+            // Pull data low
+            self.bus.set_data();
+        
+            // Wait for CLOCK to change
+            self.loop_and_yield_while(|| bit == self.bus.get_clock()).await?;
+
+            // Release the data line
+            self.bus.release_data();
+
+            // Wait for it to be pulled low
+            self.loop_and_yield_while(|| !self.bus.get_data()).await?;
+
+            // Pull CLOCK low
+            self.bus.set_clock();
+        }
+
+        data[0] = byte;
+        Ok(1)
+    }
+
+    // S2 involves reading a bit every time the CLOCK line changes, with the
+    // with first byte coming when the CLOCK line is pulled low, and hence the
+    // second with it high.
+    //
+    // After we detect the CLOCK changing, we pause to make sure DATA has time
+    // to stabilise.
+    //
+    // We flip ATN once we've read the bit.
+    async fn read_s2(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
+        assert!(!data.is_empty());
+
+        let mut byte = 0;
+
+        for _ in 0..4 {
+            // Wait for CLOCK
+            self.loop_and_yield_while(|| self.bus.get_clock()).await?;
+
+            // Brief pause
+            iec_delay!();
+
+            // Read the bit
+            byte = (byte >> 1) | ((self.bus.get_data() as u8) << 7);
+
+            // Release ATN now we've read the bit
+            self.bus.release_atn();
+
+            // Wait for CLOCK to be released
+            self.loop_and_yield_while(|| !self.bus.get_clock()).await?;
+
+            // Brief pause
+            iec_delay!();
+
+            // Read the bit
+            byte = (byte >> 1) | ((self.bus.get_data() as u8) << 7);
+
+            // Set ATN now we've read the bit
+            self.bus.set_atn();
+        }
+
+        data[0] = byte;
+        Ok(1)
+    }
+
+    // P2 involves reading a single byte from the paralle port as follows:
+    // - Release CLK
+    // - Wait for DATA to be released
+    // - Read the byte
+    // - Set CLK
+    // - Wait for DATA to be pulled low
+    async fn read_p2(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
+        self.bus.release_clock();
+
+        self.loop_and_yield_while(|| self.bus.get_data()).await?;
+
+        data[0] = self.read_pp_byte();
+
+        self.bus.set_clock();
+
+        self.loop_and_yield_while(|| !self.bus.get_data()).await?;
+
+        Ok(1)
+    }
+
+    // PP involves reading 2 bytes:
+    // - Wait for DATA to be pulled low
+    // - Read the byte from the parallel bus
+    // - Relase CLK
+    // - Wait for DATA to be released
+    // - Read the second byte from the parallel bus
+    // - Set CLK
+    async fn read_pp(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
+        assert!(data.len() >= 2);
+
+        // Wait for DATA to be pulled low
+        self.loop_and_yield_while(|| !self.bus.get_data()).await?;
+
+        // Read the first byte
+        data[0] = self.read_pp_byte();
+
+        // Release CLK
+        self.bus.release_clock();
+
+        // Wait for DATA to be released
+        self.loop_and_yield_while(|| self.bus.get_data()).await?;
+
+        // Read the second byte
+        data[1] = self.read_pp_byte();
+
+        // Set CLK
+        self.bus.set_clock();
+
+        Ok(2)
+    }
+
+    // Reads a byte from the parallel port
+    fn read_pp_byte(&mut self) -> u8 {
+        let mut val = 0;
+        
+        // Iterate through all 8 bits
+        for ii in 0..8 {
+            // Read the bit and set the corresponding bit in val
+            if self.bus.dio[ii].read_pin() {
+                val |= (self.bus.dio[ii].read_pin() as u8) << ii;
+            }
+        }
+        
+        val
     }
 }
 
@@ -1030,7 +1238,7 @@ impl IecDriver {
         self.bus.retrieve_pins()
     }
 
-    pub fn retrieve_dios(&mut self) -> Option<[Option<Dio>; 8]> {
+    pub fn retrieve_dios(&mut self) -> [Dio; 8] {
         self.bus.retrieve_dios()
     }
 
@@ -1294,7 +1502,7 @@ impl IecDriver {
         Ok(())
     }
 
-    async fn loop_and_yield<F>(&self, mut condition: F) -> Result<(), DriverError>
+    async fn loop_and_yield_while<F>(&self, mut condition: F) -> Result<(), DriverError>
     where
         F: FnMut() -> bool,
     {
