@@ -75,8 +75,9 @@ pub const PROTOCOL_YIELD_TIMER: Duration = Duration::from_micros(PROTOCOL_YIELD_
 // USB device configuration constants.
 //
 
-/// USB Descriptor information - what current in mA this device draws.
-pub const USB_POWER_MA: u16 = 100;
+/// USB Descriptor information - what current in mA this device draws.  We'll
+/// be conservative (i.e. high) and suggest it might draw as much as 500mA.
+pub const USB_POWER_MA: u16 = 500;
 
 /// USB Descriptor information - maximum endpoint 0 (control endpoint)
 /// packet size.
