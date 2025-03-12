@@ -645,9 +645,9 @@ impl ProtocolHandler {
 
             // OUT/Write
             Some(Direction::Out) => match transfer.get_response() {
-                UsbTransferResponse::Ok => Some(Status {
+                UsbTransferResponse::Ok(bytes) => Some(Status {
                     code: StatusCode::Ok,
-                    value: transfer.expected_bytes(),
+                    value: bytes,
                 }),
                 UsbTransferResponse::Error => Some(Status {
                     code: StatusCode::Error,
@@ -770,7 +770,7 @@ impl ProtocolHandler {
                                     warn!("Failed to send IN data {}", e);
                                     outstanding_bytes = 0;
 
-                                    // Say we sent 0 bytes, in order go get
+                                    // Say we sent 0 bytes, in order to get
                                     // ZLP sent.
                                     0
                                 }

@@ -66,7 +66,10 @@ pub const USB_DATA_TRANSFER_WAIT_TIMER: Duration = Duration::from_micros(1);
 pub const WIFI_CONTROL_WAIT_TIMER: Duration = Duration::from_millis(100);
 
 // How long to yield in Commodore drive protocol methods.
-pub const PROTOCOL_YIELD_TIMER: Duration = Duration::from_micros(1);
+pub const PROTOCOL_YIELD_TIMER_MS: u64 = 1;
+
+// How long to yield in Commodore drive protocol methods.
+pub const PROTOCOL_YIELD_TIMER: Duration = Duration::from_micros(PROTOCOL_YIELD_TIMER_MS);
 
 //
 // USB device configuration constants.

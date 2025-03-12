@@ -447,8 +447,8 @@ pub enum UsbTransferResponse {
     /// USB transfer is still acive
     None,
 
-    /// USB transfer is complete
-    Ok,
+    /// USB transfer is complete, and how many bytes
+    Ok(u16),
 
     /// USB transfer failed
     Error,
@@ -458,7 +458,7 @@ impl defmt::Format for UsbTransferResponse {
     fn format(&self, f: defmt::Formatter) {
         match self {
             UsbTransferResponse::None => defmt::write!(f, "None"),
-            UsbTransferResponse::Ok => defmt::write!(f, "Ok"),
+            UsbTransferResponse::Ok(bytes) => defmt::write!(f, "Ok {} bytes", bytes),
             UsbTransferResponse::Error => defmt::write!(f, "Error"),
         }
     }

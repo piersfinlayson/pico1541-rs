@@ -53,6 +53,26 @@ pub enum DriverError {
     TryLock,
 }
 
+// Provide a method to convert DriverError to UsbTransferResponse.  The
+// protocol handler will use the UsbTransferResponse to device what to send
+// back to the host on a write.  The original xum1541 code uses OK for all
+// errors it detects, but uses the count, on the OK, to signal if the data
+// couldn't be written.  Hence the Ok response includes the count.
+// In the read case we still pass back the count, so the protocol handler gets
+// it, but it won't be used.  Instead the number of bytes sent back via the
+// bulk IN transfer will signify the number of bytes read, and when it's done.
+impl DriverError {
+    fn into_usb_transfer_response(self, count: u16) -> UsbTransferResponse {
+        match self {
+            DriverError::Io
+            | DriverError::Timeout
+            | DriverError::NoDevices
+            | DriverError::NoDevice => UsbTransferResponse::Ok(count),
+            _ => UsbTransferResponse::Error,
+        }
+    }
+}
+
 /// Defines the interface for Commodore protocol implementations.
 /// Each supported protocol (IEC, parallel, etc.) must implement this trait
 /// to provide the core communication functionality needed by the xum1541.
@@ -73,13 +93,14 @@ pub trait ProtocolDriver {
     /// * `flags` - Control flags affecting the write operation
     ///
     /// # Returns
-    /// The number of bytes actually written or an error
+    /// The number of bytes actually written or an error.  If an error, the
+    /// response includes the error and the number of bytes written
     async fn raw_write(
         &mut self,
         len: u16,
         protocol: ProtocolType,
         flags: ProtocolFlags,
-    ) -> Result<u16, DriverError>;
+    ) -> Result<u16, (DriverError, u16)>;
 
     /// Read raw bytes from the bus.
     ///
@@ -89,8 +110,13 @@ pub trait ProtocolDriver {
     /// * `write_ep` - The endpoint to write data to
     ///
     /// # Returns
-    /// The number of bytes actually read or an error
-    async fn raw_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError>;
+    /// The number of bytes actually read or an error.  If an error, the
+    /// response includes the error and the number of bytes read
+    async fn raw_read(
+        &mut self,
+        len: u16,
+        protocol: ProtocolType,
+    ) -> Result<u16, (DriverError, u16)>;
 
     /// Wait for a specific bus line to reach the desired state.
     ///
@@ -161,7 +187,7 @@ impl ProtocolDriver for Driver {
         len: u16,
         protocol: ProtocolType,
         flags: ProtocolFlags,
-    ) -> Result<u16, DriverError> {
+    ) -> Result<u16, (DriverError, u16)> {
         match self {
             Driver::Iec(driver) => driver.raw_write(len, protocol, flags).await,
             Driver::Ieee(driver) => driver.raw_write(len, protocol, flags).await,
@@ -169,7 +195,11 @@ impl ProtocolDriver for Driver {
         }
     }
 
-    async fn raw_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError> {
+    async fn raw_read(
+        &mut self,
+        len: u16,
+        protocol: ProtocolType,
+    ) -> Result<u16, (DriverError, u16)> {
         match self {
             Driver::Iec(driver) => driver.raw_read(len, protocol).await,
             Driver::Ieee(driver) => driver.raw_read(len, protocol).await,
@@ -273,11 +303,12 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
         match guard {
             Some(guard) => {
                 // Call raw_write and set the response appropriately.
-                guard
-                    .raw_write(len, protocol, flags)
-                    .await
-                    .map(|_| UsbTransferResponse::Ok)
-                    .unwrap_or(UsbTransferResponse::Error)
+                let result = guard.raw_write(len, protocol, flags).await;
+
+                match result {
+                    Ok(count) => UsbTransferResponse::Ok(count),
+                    Err((e, count)) => e.into_usb_transfer_response(count),
+                }
             }
             None => {
                 warn!("No driver set for raw_write_task");
@@ -318,11 +349,12 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
         match guard {
             Some(guard) => {
                 // Call raw_read and set the response appropriately.
-                guard
-                    .raw_read(len, protocol)
-                    .await
-                    .map(|_| UsbTransferResponse::Ok)
-                    .unwrap_or(UsbTransferResponse::Error)
+                let result = guard.raw_read(len, protocol).await;
+
+                match result {
+                    Ok(count) => UsbTransferResponse::Ok(count),
+                    Err((e, count)) => e.into_usb_transfer_response(count),
+                }
             }
             None => {
                 warn!("No driver set for raw_read_task");

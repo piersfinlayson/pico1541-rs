@@ -25,11 +25,15 @@ impl ProtocolDriver for TapeDriver {
         len: u16,
         _protocol: ProtocolType,
         flags: ProtocolFlags,
-    ) -> Result<u16, DriverError> {
+    ) -> Result<u16, (DriverError, u16)> {
         unimplemented!()
     }
 
-    async fn raw_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError> {
+    async fn raw_read(
+        &mut self,
+        len: u16,
+        protocol: ProtocolType,
+    ) -> Result<u16, (DriverError, u16)> {
         unimplemented!()
     }
 

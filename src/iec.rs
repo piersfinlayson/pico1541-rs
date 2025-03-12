@@ -13,7 +13,8 @@ use embedded_hal::delay::DelayNs;
 use static_assertions::const_assert;
 
 use crate::constants::{
-    MAX_EP_PACKET_SIZE_USIZE, PROTOCOL_YIELD_TIMER, USB_DATA_TRANSFER_WAIT_TIMER,
+    MAX_EP_PACKET_SIZE_USIZE, PROTOCOL_YIELD_TIMER, PROTOCOL_YIELD_TIMER_MS,
+    USB_DATA_TRANSFER_WAIT_TIMER,
 };
 use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::{Dio, ProtocolFlags, ProtocolType};
@@ -68,8 +69,8 @@ pub const IO_SRQ: u8 = IEC_SRQ;
 const BUS_FREE_CHECK_INTERVAL: Duration = Duration::from_millis(1);
 const BUS_FREE_TIMEOUT: Duration = Duration::from_millis(1500);
 const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(1);
-const WAIT_INTERVAL: Duration = Duration::from_micros(1);
-const TALK_TIMEOUT: Duration = Duration::from_millis(1000);
+const TALK_TIMEOUT: Duration = Duration::from_secs(1);
+const READ_CLOCK_TIMEOUT: Duration = Duration::from_secs(1);
 
 // Timer macros, used for simple inlines.
 //
@@ -471,7 +472,11 @@ impl ProtocolDriver for IecDriver {
     }
 
     /// Read data from the IEC bus
-    async fn raw_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError> {
+    async fn raw_read(
+        &mut self,
+        len: u16,
+        protocol: ProtocolType,
+    ) -> Result<u16, (DriverError, u16)> {
         info!("Raw Read: Protocol: {}, {} bytes requested", protocol, len);
 
         // Check protocol type
@@ -487,7 +492,7 @@ impl ProtocolDriver for IecDriver {
             // TODO NibCommand, NibSrq, NibSrqCommand, Tap and TapConfig
             _ => {
                 error!("Raw read: Unsupported protocol type");
-                Err(DriverError::Unsupported)
+                Err((DriverError::Unsupported, 0))
             }
         }
     }
@@ -509,7 +514,7 @@ impl ProtocolDriver for IecDriver {
         len: u16,
         protocol: ProtocolType,
         flags: ProtocolFlags,
-    ) -> Result<u16, DriverError> {
+    ) -> Result<u16, (DriverError, u16)> {
         trace!(
             "Raw Write: Protocol: {}, {}, {} bytes requested",
             protocol,
@@ -529,7 +534,7 @@ impl ProtocolDriver for IecDriver {
             // TODO NibCommand, NibSrq, NibSrqCommand, Tap and TapConfig
             _ => {
                 error!("Raw write: Unsupported protocol type");
-                Err(DriverError::Unsupported)
+                Err((DriverError::Unsupported, 0))
             }
         };
 
@@ -549,13 +554,8 @@ impl ProtocolDriver for IecDriver {
         let hw_state = if state != 0 { hw_mask } else { 0 };
 
         let timeout = timeout.unwrap_or(Duration::MAX);
-        match self
-            .wait_timeout_yield(hw_mask, hw_state, timeout, true)
+        self.wait_timeout_yield(hw_mask, hw_state, timeout, true)
             .await
-        {
-            true => Ok(()),
-            false => Err(DriverError::Timeout),
-        }
     }
 
     // This is an externally exposed function, which returns IEC_* lines, not
@@ -631,7 +631,7 @@ impl IecDriver {
         len: u16,
         protocol: ProtocolType,
         flags: ProtocolFlags,
-    ) -> Result<u16, DriverError> {
+    ) -> Result<u16, (DriverError, u16)> {
         assert!(protocol == ProtocolType::Cbm);
 
         let atn = flags.is_atn();
@@ -658,7 +658,7 @@ impl IecDriver {
             error!("Raw Write: No devices present on the bus");
             debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
             // TO DO - async read handling
-            return Err(DriverError::NoDevices);
+            return Err((DriverError::NoDevices, 0));
         }
 
         // Let data go high.
@@ -679,7 +679,7 @@ impl IecDriver {
             error!("Raw Write: No devices detected");
             debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins() & IO_DATA);
             self.bus.release_lines(IO_CLK | IO_ATN);
-            return Err(DriverError::NoDevices);
+            return Err((DriverError::NoDevices, 0));
         }
 
         // Wait for drive to be ready for us to release CLK.  The tranfer
@@ -771,6 +771,7 @@ impl IecDriver {
                     self.wait(IEC_CLOCK, 1, Some(TALK_TIMEOUT))
                         .await
                         .map(|_| count)
+                        .map_err(|e| (e, count))
                 } else {
                     self.bus.release_atn();
                     Ok(count)
@@ -779,7 +780,7 @@ impl IecDriver {
             Err(e) => {
                 delay_block_us!(IEC_T_R);
                 self.bus.iec_release(IO_CLK | IO_ATN);
-                Err(e)
+                Err((e, count))
             }
         }
     }
@@ -790,7 +791,7 @@ impl IecDriver {
     /// Implements standard Commodore IEC read support
     ///
     /// Timing is critical in this function, so we use delay_block_us.
-    async fn cbm_read(&mut self, len: u16) -> Result<u16, DriverError> {
+    async fn cbm_read(&mut self, len: u16) -> Result<u16, (DriverError, u16)> {
         let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
 
         let mut count: u16 = 0;
@@ -810,31 +811,14 @@ impl IecDriver {
                 count,
                 buf_count
             );
+
             // Wait for clock to be released, with 1s timeout.  Timing isn't
             // particularly critical here, so we can yield.
-            let timeout = Instant::now() + Duration::from_secs(1);
-            let result = loop {
-                let clock_released = !self.bus.get_clock();
-                match clock_released {
-                    true => break Ok(()),
-                    false => {
-                        if Instant::now() > timeout {
-                            error!("Raw read: timeout waiting for clock");
-                            break Err(DriverError::Timeout);
-                        }
-                        delay_yield!(WAIT_INTERVAL);
-
-                        if self.check_abort() {
-                            warn!("Aborted waiting for clock to be released");
-                            break Err(DriverError::Abort);
-                        }
-                    }
-                }
-            };
-            if let Err(e) = result {
-                // Exit the loop rather than return in case there's some
-                // cleaning up later in the function.
-                break Err(e);
+            if let Err(e) = self
+                .wait_timeout_yield(IO_CLK, 0, READ_CLOCK_TIMEOUT, true)
+                .await
+            {
+                break Err((e, count));
             }
 
             // Break if we've already seen EOI
@@ -847,13 +831,10 @@ impl IecDriver {
             self.bus.release_data();
 
             // Wait up to 400us for CLK to be pulled by the drive
-            let timeout = Instant::now() + Duration::from_micros(400);
-            while !self.bus.get_clock() && Instant::now() < timeout {
-                delay_block_us!(2);
-            }
+            let clock = self.wait_timeout_block(IO_CLK, IO_CLK, Duration::from_micros(400));
 
             // Check for EOI signalling from talker
-            if !self.bus.get_clock() {
+            if !clock {
                 debug!("Clock high - so EOI signalled");
                 self.eoi = true;
                 self.bus.set_data();
@@ -877,14 +858,17 @@ impl IecDriver {
                 }
                 Err(e) => {
                     error!("Raw read: error receiving byte");
-                    break Err(e);
+                    break Err((e, count));
                 }
             }
 
             // Send the data if we've filled up a USB packet, or we're
             // finished reading.
             if buf_count >= MAX_EP_PACKET_SIZE_USIZE || count >= len {
-                Self::send_data_to_host(&buffer, buf_count).await?;
+                match Self::send_data_to_host(&buffer, buf_count).await {
+                    Ok(_) => {}
+                    Err(e) => break Err((e, count)),
+                }
                 buf_count = 0;
             }
 
@@ -903,7 +887,9 @@ impl IecDriver {
             // immediately after hitting 64 bytes.
             debug!("Hit error reading, sending outstanding {} bytes", buf_count);
             assert!(buf_count < MAX_EP_PACKET_SIZE_USIZE);
-            Self::send_data_to_host(&buffer, buf_count).await?;
+            Self::send_data_to_host(&buffer, buf_count)
+                .await
+                .map_err(|e| (e, count))?;
         }
 
         result
@@ -914,7 +900,7 @@ impl IecDriver {
         len: u16,
         protocol: ProtocolType,
         _flags: ProtocolFlags,
-    ) -> Result<u16, DriverError> {
+    ) -> Result<u16, (DriverError, u16)> {
         // Wait until there's some bytes to send before we start so we don't
         // have to pause in the middle of a transfer.
         UsbDataTransfer::lock_wait_outstanding().await;
@@ -936,13 +922,21 @@ impl IecDriver {
             }
 
             // Call the appropriate write function
-            count += match protocol {
+
+            let result = match protocol {
                 ProtocolType::S1 => self.write_s1(buf[0]).await,
                 ProtocolType::S2 => self.write_s2(buf[0]).await,
                 ProtocolType::PP => self.write_pp(buf[0], buf[1]).await,
                 ProtocolType::P2 => self.write_p2(buf[0]).await,
                 _ => unreachable!("Non-CBM write: Unsupported protocol type"),
-            }?;
+            };
+
+            match result {
+                Ok(size) => count += size,
+                Err(e) => {
+                    return Err((e, count as u16));
+                }
+            }
         }
 
         Ok(count as u16)
@@ -1133,7 +1127,11 @@ impl IecDriver {
         Ok(2)
     }
 
-    async fn non_cbm_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError> {
+    async fn non_cbm_read(
+        &mut self,
+        len: u16,
+        protocol: ProtocolType,
+    ) -> Result<u16, (DriverError, u16)> {
         // Check we can send bytes before we get started, so we don't have to
         // pause in the middle of a transfer.  We could just wait for one byte
         // of space, but we'll wait for enough space for an entire USB packet
@@ -1160,14 +1158,17 @@ impl IecDriver {
                 ProtocolType::PP => self.read_pp(&mut buf).await,
                 ProtocolType::P2 => self.read_p2(&mut buf).await,
                 _ => unreachable!("Non-CBM read: Unsupported protocol type"),
-            }?;
+            }
+            .map_err(|e| (e, count as u16))?;
 
             // There should be no way for the read functions to return an
             // unexpected number of bytes.
             assert!(size == num_bytes);
 
             // Send the data (immediately - don't wait for a full packet)
-            Self::send_data_to_host(&buf[..size], size).await?;
+            Self::send_data_to_host(&buf[..size], size)
+                .await
+                .map_err(|e| (e, count as u16))?;
 
             count += size;
         }
@@ -1472,18 +1473,27 @@ impl IecDriver {
         state: u8,
         timeout: Duration,
         feed: bool,
-    ) -> bool {
+    ) -> Result<(), DriverError> {
         let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
+        loop {
             if (self.bus.poll_pins() & mask) != state {
-                break;
+                break Ok(());
             }
+
+            if Instant::now() >= deadline {
+                break Err(DriverError::Timeout);
+            }
+
             if feed {
                 feed_watchdog(TaskId::ProtocolHandler);
             }
-            delay_yield_us!(1);
+
+            if self.check_abort() {
+                break Err(DriverError::Abort);
+            }
+
+            delay_yield_us!(PROTOCOL_YIELD_TIMER_MS)
         }
-        (self.bus.poll_pins() & mask) != state
     }
 
     /// Wait for the bus to be free
