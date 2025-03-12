@@ -395,14 +395,14 @@ impl ProtocolHandler {
         match command.command {
             // Create a new OUT/write transfer.
             CommandType::Write => {
-                debug!(
+                trace!(
                     "Host to WRITE {} bytes, protocol {}, {}",
                     command.len, command.protocol, command.flags
                 );
 
                 if !command.protocol.supported() {
                     // Try to send an error
-                    warn!("Unsupported protocol {}", command.protocol);
+                    info!("Unsupported protocol {}", command.protocol);
                     self.send_status(Status {
                         code: StatusCode::Error,
                         value: command.len,
@@ -438,7 +438,7 @@ impl ProtocolHandler {
 
             // Create a new IN/read transfer.
             CommandType::Read => {
-                debug!(
+                trace!(
                     "Host to READ {} bytes, protocol {}",
                     command.len, command.protocol
                 );
@@ -446,7 +446,7 @@ impl ProtocolHandler {
                 if !command.protocol.supported() {
                     // Send a zero length packet (we don't send status in
                     // response to a read error).
-                    warn!("Unsupported protocol {}", command.protocol);
+                    info!("Unsupported protocol {}", command.protocol);
                     let _ = self.write_ep.write(&[]).await;
                     update_status(DisplayType::Error);
                 }
@@ -469,12 +469,13 @@ impl ProtocolHandler {
             }
 
             CommandType::GetEoi => {
-                debug!("Get EOI");
-                let value = match DRIVER.lock().await.as_ref().unwrap().get_eoi() {
+                trace!("Get EOI");
+                let value = DRIVER.lock().await.as_ref().unwrap().get_eoi();
+                debug!("Get EOI response: {}", value);
+                let value = match value {
                     true => 1,
                     false => 0,
                 };
-                debug!("EOI: {}", value);
                 self.send_status(Status {
                     code: StatusCode::Ok,
                     value,
@@ -482,7 +483,7 @@ impl ProtocolHandler {
                 .await;
             }
             CommandType::ClearEoi => {
-                debug!("Clear EOI");
+                trace!("Clear EOI");
                 DRIVER.lock().await.as_mut().unwrap().clear_eoi();
                 self.send_status(Status {
                     code: StatusCode::Ok,
@@ -493,7 +494,7 @@ impl ProtocolHandler {
             CommandType::IecWait => {
                 let line = command.bytes[1];
                 let state = command.bytes[2];
-                debug!("IEC Wait - line(s): 0x{:02x}, state: 0x{:02x}", line, state);
+                trace!("IEC Wait - line(s): 0x{:02x}, state: 0x{:02x}", line, state);
                 match DRIVER
                     .lock()
                     .await
@@ -511,14 +512,14 @@ impl ProtocolHandler {
                         .await;
                     }
                     Err(e) => {
-                        warn!("IEC Wait - error: {}", e);
+                        info!("IEC Wait - error: {}", e);
                     }
                 }
             }
             CommandType::IecPoll => {
-                debug!("IEC Poll");
+                trace!("IEC Poll");
                 let value = DRIVER.lock().await.as_mut().unwrap().poll();
-                debug!("IEC Poll - value: 0x{:02x}", value);
+                debug!("IEC Poll response: 0x{:02x}", value);
                 self.send_status(Status {
                     code: StatusCode::Ok,
                     value: value as u16,
@@ -528,7 +529,7 @@ impl ProtocolHandler {
             CommandType::IecSetRelease => {
                 let set = command.bytes[1];
                 let release = command.bytes[2];
-                debug!(
+                trace!(
                     "IEC Set/Release - set: 0x{:02x}, release: 0x{:02x}",
                     set, release
                 );
@@ -545,8 +546,9 @@ impl ProtocolHandler {
                 .await;
             }
             CommandType::PpRead => {
-                debug!("PP Read");
+                trace!("PP Read");
                 let byte = DRIVER.lock().await.as_mut().unwrap().read_pp_byte();
+                debug!("PP Read byte: 0x{:02x}", byte);
                 self.send_status(Status {
                     code: StatusCode::Ok,
                     value: byte as u16,
@@ -554,8 +556,8 @@ impl ProtocolHandler {
                 .await;
             }
             CommandType::PpWrite => {
-                debug!("PP Write");
                 let byte = command.bytes[1];
+                trace!("PP Write byte: 0x{:02x}", byte);
                 DRIVER.lock().await.as_mut().unwrap().write_pp_byte(byte);
                 self.send_status(Status {
                     code: StatusCode::Ok,
