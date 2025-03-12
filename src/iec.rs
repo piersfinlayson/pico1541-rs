@@ -71,6 +71,7 @@ const BUS_FREE_TIMEOUT: Duration = Duration::from_millis(1500);
 const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(1);
 const TALK_TIMEOUT: Duration = Duration::from_secs(1);
 const READ_CLOCK_TIMEOUT: Duration = Duration::from_secs(1);
+const FOREVER_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365); // A year
 
 // Timer macros, used for simple inlines.
 //
@@ -553,7 +554,7 @@ impl ProtocolDriver for IecDriver {
         let hw_mask = self.iec2hw(line);
         let hw_state = if state != 0 { hw_mask } else { 0 };
 
-        let timeout = timeout.unwrap_or(Duration::MAX);
+        let timeout = timeout.unwrap_or(FOREVER_TIMEOUT);
         self.wait_timeout_yield(hw_mask, hw_state, timeout, true)
             .await
     }
