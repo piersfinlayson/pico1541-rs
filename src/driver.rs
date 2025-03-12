@@ -296,7 +296,7 @@ impl Driver {
 /// done, and hence the driver is unlocked.
 #[embassy_executor::task]
 pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFlags) {
-    debug!("Starting raw_write_task");
+    trace!("Driver write task started");
 
     let response = {
         abort();
@@ -308,14 +308,19 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
             Some(guard) => {
                 // Call raw_write and set the response appropriately.
                 let result = guard.raw_write(len, protocol, flags).await;
-
                 match result {
-                    Ok(count) => UsbTransferResponse::Ok(count),
-                    Err((e, count)) => e.into_usb_transfer_response(count),
+                    Ok(count) => {
+                        trace!("Driver write task completed OK: wrote {} bytes", count);
+                        UsbTransferResponse::Ok(count)
+                    }
+                    Err((e, count)) => {
+                        info!("Driver write task completed with error: {}, wrote {} bytes", e, count);
+                        e.into_usb_transfer_response(count)
+                    }
                 }
             }
             None => {
-                warn!("No driver set for raw_write_task");
+                warn!("No driver available for write task");
                 UsbTransferResponse::Error
             }
         }
@@ -325,11 +330,11 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
     UsbDataTransfer::lock_set_response(response).await;
 
     if check_abort() {
-        warn!("raw_write_task was aborted");
+        warn!("Driver write task was aborted");
         clear_abort();
     }
 
-    debug!("Finished raw_write_task");
+    trace!("Driver write task exiting");
 }
 
 /// Task to perform a raw_read() operation, using the active driver.
@@ -342,7 +347,7 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
 /// done, and hence the driver is unlocked.
 #[embassy_executor::task]
 pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
-    debug!("Starting raw_read_task");
+    trace!("Driver read task started");
 
     let response = {
         abort();
@@ -356,12 +361,18 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
                 let result = guard.raw_read(len, protocol).await;
 
                 match result {
-                    Ok(count) => UsbTransferResponse::Ok(count),
-                    Err((e, count)) => e.into_usb_transfer_response(count),
+                    Ok(count) => {
+                        trace!("Driver read task completed OK: read {} bytes", count);
+                        UsbTransferResponse::Ok(count)
+                    }
+                    Err((e, count)) => {
+                        info!("Driver read task completed with error: {}, wrote {} bytes", e, count);
+                        e.into_usb_transfer_response(count)
+                    }
                 }
             }
             None => {
-                warn!("No driver set for raw_read_task");
+                warn!("No driver available for read task");
                 UsbTransferResponse::Error
             }
         }
@@ -371,11 +382,11 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
     UsbDataTransfer::lock_set_response(response).await;
 
     if check_abort() {
-        warn!("raw_read_task was aborted");
+        warn!("Driver read task was aborted");
         clear_abort();
     }
 
-    debug!("Finished raw_read_task");
+    trace!("Driver read task exiting");
 }
 
 /// Helper function to abort the driver task.

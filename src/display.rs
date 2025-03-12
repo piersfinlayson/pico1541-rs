@@ -116,7 +116,7 @@ impl StatusDisplay {
     ///
     /// This is calld by other tasks to change what the LED displays.
     pub async fn update(&mut self, status: DisplayType) {
-        debug!("Update status to {}", status);
+        debug!("Display status updated to: {}", status);
 
         // Only update LED immediately if changing to/from states with
         // different LED behaviors

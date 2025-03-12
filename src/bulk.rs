@@ -71,10 +71,10 @@ impl Bulk {
                 // lose data if the task is cancelled.
                 let result = self.read_ep.read(&mut data).await;
 
-                debug!("Bulk OUT endpoint read returned {:?}", result);
-
                 match result {
                     Ok(size) => {
+                        debug!("Bulk OUT received {} bytes", size);
+
                         // We got bulk data.  Handle it.
                         if size <= MAX_WRITE_SIZE_USIZE {
                             // This call will block if the channel is full -
