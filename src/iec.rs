@@ -8,9 +8,7 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Flex, Pull};
-use embassy_time::{with_timeout, Delay, Duration, Instant, Timer};
-use embedded_hal::delay::DelayNs;
-use static_assertions::const_assert;
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 
 use crate::constants::{
     MAX_EP_PACKET_SIZE_USIZE, PROTOCOL_YIELD_TIMER, PROTOCOL_YIELD_TIMER_MS,
@@ -20,34 +18,8 @@ use crate::driver::{DriverError, ProtocolDriver};
 use crate::protocol::{Dio, ProtocolFlags, ProtocolType};
 use crate::transfer::UsbDataTransfer;
 use crate::watchdog::{feed_watchdog, TaskId};
-
-//
-// IEC protocol timers
-//
-#[allow(dead_code)]
-const IEC_T_AT: u32 = 1000; // Max ATN response required time (us)
-                            //      IEC_T_H     inf  // Max listener hold-off time
-const IEC_T_NE: u32 = 40; // Typical non-EOI response to RFD time (us)
-const IEC_T_S: u32 = 20; // Min talker bit setup time (us, 70 typical)
-const IEC_T_V: u32 = 20; // Min data valid time (us, 20 typical)
-#[allow(dead_code)]
-const IEC_T_F: u32 = 1000; // Max frame handshake time (us, 20 typical)
-const IEC_T_R: u32 = 20; // Min frame to release of ATN time (us)
-const IEC_T_BB: u32 = 100; // Min time between bytes (us)
-#[allow(dead_code)]
-const IEC_T_YE: u32 = 200; // Min EOI response time (us, 250 typical)
-#[allow(dead_code)]
-const IEC_T_EI: u32 = 60; // Min EOI response hold time (us)
-#[allow(dead_code)]
-const IEC_T_RY: u32 = 60; // Max talker response limit (us, 30 typical)
-#[allow(dead_code)]
-const IEC_T_PR: u32 = 20; // Min byte acknowledge hold time (us, 30 typical)
-                          //const IEC_T_TK: u32 = -1;   // 20/30/100 talk-attention release time (us)
-                          //      IEC_T_DC    inf  // Talk-attention acknowledge time, 0 - inf
-#[allow(dead_code)]
-const IEC_T_DA: u32 = 80; // Min talk-attention ack hold time (us)
-#[allow(dead_code)]
-const IEC_T_FR: u32 = 60; // Min EOI acknowledge time (us)
+use crate::time::{iec_delay, block_us, block_ns, yield_us, yield_ms, yield_for};
+use crate::time::iec::{IEC_T_NE, IEC_T_BB, IEC_T_R, IEC_T_S, IEC_T_V, BUS_FREE_CHECK_YIELD, BUS_FREE_TIMEOUT, LISTENER_WAIT_INTERVAL, WRITE_TALK_CLK_TIMEOUT, READ_CLK_TIMEOUT, FOREVER_TIMEOUT};
 
 // IEC protocol bit masks - these are used by external applications
 pub const IEC_DATA: u8 = 0x01;
@@ -65,13 +37,6 @@ pub const IO_ATN: u8 = IEC_ATN;
 pub const IO_RESET: u8 = IEC_RESET;
 pub const IO_SRQ: u8 = IEC_SRQ;
 
-// Timer contants
-const BUS_FREE_CHECK_INTERVAL: Duration = Duration::from_millis(1);
-const BUS_FREE_TIMEOUT: Duration = Duration::from_millis(1500);
-const LISTENER_WAIT_INTERVAL: Duration = Duration::from_micros(1);
-const TALK_TIMEOUT: Duration = Duration::from_secs(1);
-const READ_CLOCK_TIMEOUT: Duration = Duration::from_secs(1);
-const FOREVER_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365); // A year
 
 // Timer macros, used for simple inlines.
 //
@@ -83,76 +48,13 @@ const FOREVER_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365); // A 
 //   possible that the pause will be longer than required.
 //
 // So, where the precise timing is critical, we use Delay.delay*(), using the
-// delay_block_us!() macro.  Where we can tolerate a longer delay if required,
-// we use the delay_yield_*!() macros.
+// block_us!() macro.  Where we can tolerate a longer delay if required,
+// we use the yield_*!() macros.
 //
 // Irrespective of which macro is used, this module must ensure watchdog is
 // fed, should it be delaying for a long time.
 
-// Brief delay to allow lines to settle
-macro_rules! iec_delay {
-    () => {
-        Delay.delay_us(2)
-    };
-}
 
-// Blocking delay for a specified time
-macro_rules! delay_block_us {
-    ($us:expr) => {
-        Delay.delay_us($us)
-    };
-}
-
-// We can't use Delay.delay_ns() for a nanosecond delay, as the embassy tick
-// rate for the Pico is 1Mhz.  Hence we need to implement something ourselves.
-macro_rules! delay_block_ns {
-    ($ns:expr) => {{
-        // Set clock frequency based on cargo features
-        #[cfg(feature = "pico")]
-        const CLOCK_FREQ_MHZ: u32 = 125;
-
-        #[cfg(feature = "pico2")]
-        const CLOCK_FREQ_MHZ: u32 = 150;
-
-        // Calculate ns per cycle
-        const NS_PER_CYCLE: u32 = 1000 / CLOCK_FREQ_MHZ;
-
-        // Minimum practical delay (estimated overhead of the function call)
-        #[allow(dead_code)]
-        const MIN_PRACTICAL_NS: u32 = 3 * NS_PER_CYCLE;
-
-        // Compile-time assertion to check if delay is too short
-        const_assert!($ns >= MIN_PRACTICAL_NS);
-
-        // Convert nanoseconds to cycles using div_ceil from integer_div_ceil
-        // crate or a method that won't trigger Clippy warnings
-        let cycles = {
-            #[allow(clippy::manual_div_ceil)]
-            let result = ($ns + NS_PER_CYCLE - 1) / NS_PER_CYCLE;
-            result
-        };
-
-        // Use cortex_m assembly to burn exactly that number of cycles
-        cortex_m::asm::delay(cycles);
-    }};
-}
-
-// Yielding delay for a specified time
-macro_rules! delay_yield_us {
-    ($us:expr) => {
-        Timer::after_micros($us).await
-    };
-}
-macro_rules! delay_yield_ms {
-    ($ms:expr) => {
-        Timer::after_millis($ms).await
-    };
-}
-macro_rules! delay_yield {
-    ($dur:expr) => {
-        Timer::after($dur).await
-    };
-}
 
 /// Represents a single bidirectional IEC bus line using separate input/output pins
 pub struct Line {
@@ -449,7 +351,7 @@ pub struct IecDriver {
 }
 
 impl ProtocolDriver for IecDriver {
-    /// Timing is not critical here, so we use delay_yield.
+    /// Timing is not critical here, so we use yield.
     async fn reset(&mut self, forever: bool) -> Result<(), DriverError> {
         debug!("reset");
         self.bus.release_lines(IO_DATA | IO_ATN | IO_CLK | IO_SRQ);
@@ -461,7 +363,7 @@ impl ProtocolDriver for IecDriver {
         // Hold reset line active
         self.bus.set_reset();
         debug!("Reset: set_reset() done");
-        delay_yield_ms!(100);
+        yield_ms!(100);
         debug!("Reset: release_reset()");
         self.bus.release_reset();
 
@@ -500,7 +402,7 @@ impl ProtocolDriver for IecDriver {
 
     /// Send data to the drive
     ///
-    /// Timing is critical in this function, so we use delay_block_us.
+    /// Timing is critical in this function, so we use block_us.
     ///
     /// When the read has finished it is important that the last USB packet
     /// was either not the maximum size allowed, or, if it was, it is followed
@@ -544,7 +446,7 @@ impl ProtocolDriver for IecDriver {
     }
 
     // As this is wait forever, timing with the loop isn't critical, so we use
-    // delay_yield.
+    // yield.
     async fn wait(
         &mut self,
         line: u8,
@@ -685,7 +587,7 @@ impl IecDriver {
 
         // Wait for drive to be ready for us to release CLK.  The tranfer
         // starts to be unreliable below 10 us.
-        delay_block_us!(IEC_T_NE);
+        block_us!(IEC_T_NE);
 
         // Send bytes as soon as the device is ready
         let mut count = 0;
@@ -726,7 +628,7 @@ impl IecDriver {
             // Send the byte
             if self.send_byte(byte).await {
                 count += 1;
-                delay_block_us!(IEC_T_BB);
+                block_us!(IEC_T_BB);
             } else {
                 info!("Raw write: io err");
                 // TODO - async read handling
@@ -753,14 +655,10 @@ impl IecDriver {
 
                     // Hold DATA and release ATN
                     self.set_release(IO_DATA, IO_ATN).await;
-                    // IEC_T_TK was defined to be -1 in the original C code which
-                    // presumably meant to make the delay sub micro-second.  We'll try
-                    // to oblige.  The embassy-rp documentation indicates that when
-                    // time-driver feature is enabled (which it is), the RP2040 TIMER
-                    // device is used for embassy-time time at a tick rate of 1MHz.  So,
-                    // timers less than 1us are not possible.
-                    delay_block_us!(0); // try a similar trick
-                                        //delay_block_us!(IEC_T_TK).await;
+                    // IEC_T_TK was defined to be -1 in the original C code
+                    // which presumably meant to make the delay sub
+                    // micro-second.
+                    block_ns!(500);
 
                     // Release CLK and wait for device to grab it
                     self.bus.release_clock();
@@ -769,7 +667,7 @@ impl IecDriver {
                     // Wait for device to pull CLOCK low before returning.  As
                     // self.wait() is an external API, it takes IEC_* lines
                     // not IO_lines*
-                    self.wait(IEC_CLOCK, 1, Some(TALK_TIMEOUT))
+                    self.wait(IEC_CLOCK, 1, Some(WRITE_TALK_CLK_TIMEOUT))
                         .await
                         .map(|_| count)
                         .map_err(|e| (e, count))
@@ -779,7 +677,7 @@ impl IecDriver {
                 }
             }
             Err(e) => {
-                delay_block_us!(IEC_T_R);
+                block_us!(IEC_T_R);
                 self.bus.iec_release(IO_CLK | IO_ATN);
                 Err((e, count))
             }
@@ -791,7 +689,7 @@ impl IecDriver {
 impl IecDriver {
     /// Implements standard Commodore IEC read support
     ///
-    /// Timing is critical in this function, so we use delay_block_us.
+    /// Timing is critical in this function, so we use block_us.
     async fn cbm_read(&mut self, len: u16) -> Result<u16, (DriverError, u16)> {
         let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
 
@@ -816,7 +714,7 @@ impl IecDriver {
             // Wait for clock to be released, with 1s timeout.  Timing isn't
             // particularly critical here, so we can yield.
             if let Err(e) = self
-                .wait_timeout_yield(IO_CLK, 0, READ_CLOCK_TIMEOUT, true)
+                .wait_timeout_yield(IO_CLK, 0, READ_CLK_TIMEOUT, true)
                 .await
             {
                 break Err((e, count));
@@ -839,7 +737,7 @@ impl IecDriver {
                 debug!("Clock high - so EOI signalled");
                 self.eoi = true;
                 self.bus.set_data();
-                delay_block_us!(70);
+                block_us!(70);
                 self.bus.release_data();
             }
 
@@ -855,7 +753,7 @@ impl IecDriver {
                     buf_count += 1;
                     count += 1;
 
-                    delay_block_us!(50);
+                    block_us!(50);
                 }
                 Err(e) => {
                     info!("Raw read: error receiving byte");
@@ -1080,7 +978,7 @@ impl IecDriver {
     async fn write_p2(&mut self, byte: u8) -> Result<usize, DriverError> {
         self.write_pp_byte(byte);
 
-        delay_block_ns!(500);
+        block_ns!(500);
 
         self.bus.release_clock();
 
@@ -1111,7 +1009,7 @@ impl IecDriver {
         // Write first byte
         self.write_pp_byte(byte_0);
 
-        delay_block_ns!(500);
+        block_ns!(500);
 
         self.bus.release_clock();
 
@@ -1121,7 +1019,7 @@ impl IecDriver {
         // Write second byte
         self.write_pp_byte(byte_1);
 
-        delay_block_ns!(500);
+        block_ns!(500);
 
         self.bus.set_clock();
 
@@ -1345,7 +1243,7 @@ impl IecDriver {
 
     /// Wait for listener to release DATA line
     ///
-    /// Timing is not critical here so use delay_yield.
+    /// Timing is not critical here so use yield.
     async fn wait_for_listener(&mut self) -> bool {
         // Release CLK to indicate we're ready to send
         self.bus.release_clock();
@@ -1359,7 +1257,7 @@ impl IecDriver {
                 info!("Aborted waiting for listener");
                 return false;
             }
-            delay_yield!(LISTENER_WAIT_INTERVAL);
+            yield_for!(LISTENER_WAIT_INTERVAL);
             feed_watchdog(TaskId::ProtocolHandler);
         }
 
@@ -1368,13 +1266,13 @@ impl IecDriver {
 
     /// Send a byte, one bit at a time via the IEC protocol
     ///
-    /// Timing is critical here, so we use delay_block_us.
+    /// Timing is critical here, so we use block_us.
     async fn send_byte(&mut self, b: u8) -> bool {
         let mut data = b;
 
         for _ in 0..8 {
             // Wait for setup time
-            delay_block_us!(IEC_T_S + 55);
+            block_us!(IEC_T_S + 55);
 
             // Set the bit value on the DATA line
             if (data & 1) == 0 {
@@ -1384,7 +1282,7 @@ impl IecDriver {
 
             // Trigger clock edge and hold valid for specified time
             self.bus.release_clock();
-            delay_block_us!(IEC_T_V);
+            block_us!(IEC_T_V);
 
             // Prepare for next bit
             self.set_release(IO_CLK, IO_DATA).await;
@@ -1452,7 +1350,7 @@ impl IecDriver {
     /// We wait for up to 2ms.
     ///
     /// Timing is considered critical here to wait for around 2ms.  Hence we
-    /// use delay_block_us.
+    /// use block_us.
     fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
         self.wait_timeout_block(mask, state, Duration::from_millis(2))
     }
@@ -1493,13 +1391,13 @@ impl IecDriver {
                 break Err(DriverError::Abort);
             }
 
-            delay_yield_us!(PROTOCOL_YIELD_TIMER_MS)
+            yield_us!(PROTOCOL_YIELD_TIMER_MS)
         }
     }
 
     /// Wait for the bus to be free
     ///
-    /// Timing is not criticial here, so we use delay_yield.
+    /// Timing is not criticial here, so we use yield.
     async fn wait_for_free_bus(&mut self, forever: bool) -> Result<(), DriverError> {
         async fn check_bus_until_free(device: &mut IecDriver) -> Result<(), DriverError> {
             loop {
@@ -1515,24 +1413,26 @@ impl IecDriver {
                 }
 
                 // Wait so we don't tight loop
-                delay_yield!(BUS_FREE_CHECK_INTERVAL);
+                yield_for!(BUS_FREE_CHECK_YIELD);
 
                 // Feed the bus
                 feed_watchdog(TaskId::ProtocolHandler);
             }
         }
 
-        if forever {
-            // Simply wait for the bus to be free
-            check_bus_until_free(self).await
+        // Figure out the time to wait
+        let timeout = if forever {
+            FOREVER_TIMEOUT
         } else {
-            // Wait for the the bus to be free with a timeout
-            match with_timeout(BUS_FREE_TIMEOUT, check_bus_until_free(self)).await {
-                Ok(result) => result,
-                Err(_timeout_error) => {
-                    info!("Timed out waiting for the bus to be free (expected if no drive");
-                    Err(DriverError::Timeout)
-                }
+            BUS_FREE_TIMEOUT
+        };
+
+        // Wait for the the bus to be free with a timeout
+        match with_timeout(timeout, check_bus_until_free(self)).await {
+            Ok(result) => result,
+            Err(_timeout_error) => {
+                info!("Timed out waiting for the bus to be free (expected if no drive");
+                Err(DriverError::Timeout)
             }
         }
     }
@@ -1543,24 +1443,24 @@ impl IecDriver {
     async fn check_if_bus_free(&mut self) -> bool {
         // Release all lines and wait for drive reaction time
         self.bus.release_lines(IO_ATN | IO_CLK | IO_DATA | IO_RESET);
-        delay_block_us!(50);
+        block_us!(50);
 
         // If DATA is held, drive is not yet ready
         if self.bus.get_data() {
-            delay_block_us!(150);
+            block_us!(150);
             return false;
         }
 
         // Ensure DATA is stable
-        delay_yield_us!(50);
+        yield_us!(50);
         if self.bus.get_data() {
-            delay_block_us!(100);
+            block_us!(100);
             return false;
         }
 
         // Assert ATN and wait for drive reaction
         self.bus.set_lines(IO_ATN);
-        delay_block_us!(100);
+        block_us!(100);
 
         // If DATA is still unset, no drive answered
         if !self.bus.get_data() {
@@ -1570,7 +1470,7 @@ impl IecDriver {
 
         // Test releasing ATN
         self.bus.release_atn();
-        delay_block_us!(100);
+        block_us!(100);
 
         // Check if drive released DATA
         !self.bus.get_data()

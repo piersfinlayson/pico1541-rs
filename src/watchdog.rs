@@ -12,11 +12,11 @@ use embassy_rp::peripherals::WATCHDOG as P_RpWatchdog;
 use embassy_rp::watchdog::ResetReason;
 use embassy_rp::watchdog::Watchdog as RpWatchdog;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
-use embassy_time::{Delay, Duration, Instant, Timer};
-use embedded_hal::delay::DelayNs;
+use embassy_time::{Duration, Instant, Timer};
 use rp2040_rom::ROM;
 
 use crate::constants::{WATCHDOG_LOOP_TIMER, WATCHDOG_TIMER};
+use crate::time::block_ms;
 
 // We use the WATCHDOG static to store the Watchdog object, so we can feed it
 // from all of our tasks and objects.  This is shared and mutable.  We provide
@@ -114,7 +114,7 @@ impl Watchdog {
         info!("Trigger reset");
 
         // Brief pause to allow log to be produced
-        Delay.delay_us(10000);
+        block_ms!(10);
 
         // Reboot the device
         self.hw_watchdog.trigger_reset();
