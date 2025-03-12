@@ -382,7 +382,7 @@ impl ProtocolHandler {
             }
         };
 
-        info!("New command received: {}", command.command);
+        info!("Received Bulk OUT request: {} 0x{:02x} 0x{:02x} 0x{:02x}", command.command, command.bytes[1], command.bytes[2], command.bytes[3]);
 
         // See if the driver is currently locked - this means that a command
         // is in progress, so we can't handle this one.

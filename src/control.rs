@@ -168,7 +168,7 @@ impl Control {
     // Check the request is valid and supported.
     fn check_request(&self, req: Request, dir: Direction) -> Result<ControlRequest, ControlError> {
         // Trace the request.
-        info!("Control request to interface: 0x{:02x}, request: {:#x}, request type: {}, recipient: {}, direction: {}",
+        trace!("Control request to interface: 0x{:02x}, request: {:#x}, request type: {}, recipient: {}, direction: {}",
             req.index, req.request, req.request_type, req.recipient, dir);
 
         // Only handle Class request types to an Interface.
@@ -210,6 +210,7 @@ impl Control {
 
     // Handler for OUT rquests.
     fn handle_out(&mut self, request: &ControlRequest) -> Result<(), ControlError> {
+        info!("Received Control OUT request: {}", request);
         match request {
             ControlRequest::Reset => self.set_action(ProtocolAction::Reset),
             ControlRequest::Shutdown => self.set_action(ProtocolAction::Uninitialize),
@@ -233,6 +234,8 @@ impl Control {
         buf: &mut [u8],
         len: usize,
     ) -> Result<usize, ControlError> {
+        info!("Received Control IN request: {}", request);
+
         // Check the expected length is correct for this request.
         let response_len = request.response_len();
         if len < response_len {

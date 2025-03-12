@@ -541,7 +541,7 @@ impl IecDriver {
         let talk = flags.is_talk();
 
         info!(
-            "Cbm Raw Write: len {} bytes, atn {}, talk {}",
+            "CBM Write: {} bytes, ATN: {}, ATN: {}",
             len, atn, talk
         );
 
@@ -696,6 +696,8 @@ impl IecDriver {
         let mut count: u16 = 0;
         let mut buf_count: usize = 0;
         self.eoi = false;
+
+        info!("CBM Read: Requested {} bytes", len);
 
         // Check we can send bytes before we get started, so we don't have to
         // pause in the middle of a transfer.  We could just wait for one byte
