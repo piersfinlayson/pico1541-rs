@@ -627,7 +627,7 @@ impl ProtocolHandler {
 
         // Reset the bus
         if let Err(e) = guard.as_mut().unwrap().reset(false).await {
-            info!("Hit error reseting the bus {}", e);
+            warn!("Hit error reseting the bus {}", e);
             update_status(DisplayType::Error);
         }
 
@@ -700,7 +700,7 @@ impl ProtocolHandler {
                     debug!("OUT transfer complete ({})", status.code);
 
                     // We only send a response on Cbm and Tape protocols
-                    let send_response = guard.protocol().map_or(false, |p| p.write_send_status());
+                    let send_response = guard.protocol().is_some_and(|p| p.write_send_status());
 
                     if send_response {
                         // Send the response
@@ -858,7 +858,7 @@ pub async fn protocol_handler_task() -> ! {
     // Read the core ID.  Tasks are allocated to cores at compile time with
     // embassy, so we only need to do this once and store in ProtocolHandler.
     let core = embassy_rp::pac::SIO.cpuid().read();
-    debug!("Core{}: Protocol Handler task started", core);
+    info!("Core{}: Protocol Handler task started", core);
 
     // Create and spawn the ProtocolHandler task.
     let write_ep = WRITE_EP

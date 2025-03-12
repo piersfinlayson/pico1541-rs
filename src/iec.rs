@@ -558,7 +558,7 @@ impl IecDriver {
         // then this check fails - and corresponds to a device present but
         // powered off.  If we stayed, we'd get stuck in wait_for_listener().
         if !self.wait_timeout_2ms(IO_ATN | IO_RESET, 0) {
-            info!("Raw Write: No devices present on the bus");
+            debug!("Raw Write: No devices present on the bus");
             debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
             // TO DO - async read handling
             return Err((DriverError::NoDevices, 0));
@@ -579,7 +579,7 @@ impl IecDriver {
         // Wait for any device to pull data after we set CLK.
         // This should be IEC_T_AT (1ms) but allow a bit longer.
         if !self.wait_timeout_2ms(IO_DATA, IO_DATA) {
-            info!("Raw Write: No devices detected");
+            debug!("Raw Write: No devices detected");
             debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins() & IO_DATA);
             self.bus.release_lines(IO_CLK | IO_ATN);
             return Err((DriverError::NoDevices, 0));
@@ -602,7 +602,7 @@ impl IecDriver {
 
             // Be sure DATA line has been pulled by device
             if !self.bus.get_data() {
-                info!("Raw write: Device not present");
+                debug!("Raw write: Device not present");
                 break Err(DriverError::NoDevice);
             }
 
@@ -610,7 +610,7 @@ impl IecDriver {
 
             // Release CLK and wait for listener to release data
             if !self.wait_for_listener().await {
-                info!("Raw write: No listener");
+                debug!("Raw write: No listener");
                 break Err(DriverError::Timeout);
             }
 
@@ -630,7 +630,7 @@ impl IecDriver {
                 count += 1;
                 block_us!(IEC_T_BB);
             } else {
-                info!("Raw write: io err");
+                debug!("Raw write: io err");
                 // TODO - async read handling
                 break Err(DriverError::Io);
             }
@@ -1292,7 +1292,7 @@ impl IecDriver {
         // Wait for acknowledgement
         let ack = self.wait_timeout_2ms(IO_DATA, IO_DATA);
         if !ack {
-            info!("send_byte: no ack");
+            debug!("send_byte: no ack");
         }
         ack
     }
@@ -1301,7 +1301,7 @@ impl IecDriver {
     async fn receive_byte(&mut self) -> Result<u8, DriverError> {
         // Wait for CLK to be asserted (pulled low)
         if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
-            info!("Receive byte: no clock");
+            debug!("Receive byte: no clock");
             return Err(DriverError::Timeout);
         }
 
@@ -1311,7 +1311,7 @@ impl IecDriver {
         for _bit in 0..8 {
             // Wait for CLK to be released (high)
             if !self.wait_timeout_2ms(IO_CLK, 0) {
-                info!("Receive byte: clock not released");
+                debug!("Receive byte: clock not released");
                 return Err(DriverError::Timeout);
             }
 
@@ -1323,7 +1323,7 @@ impl IecDriver {
 
             // Wait for CLK to be asserted again
             if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
-                info!("Receive byte: no clock in loop");
+                debug!("Receive byte: no clock in loop");
                 return Err(DriverError::Timeout);
             }
         }
@@ -1431,7 +1431,7 @@ impl IecDriver {
         match with_timeout(timeout, check_bus_until_free(self)).await {
             Ok(result) => result,
             Err(_timeout_error) => {
-                info!("Timed out waiting for the bus to be free (expected if no drive");
+                debug!("Timed out waiting for the bus to be free (expected if no drive");
                 Err(DriverError::Timeout)
             }
         }
@@ -1532,7 +1532,7 @@ impl IecDriver {
             Timer::after(PROTOCOL_YIELD_TIMER).await;
 
             if self.check_abort() {
-                info!("Aborted in yield, feed and maybe abort");
+                info!("Aborted in loop_and_yield");
                 break Err(DriverError::Abort);
             }
         }

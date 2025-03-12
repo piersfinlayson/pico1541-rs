@@ -4,6 +4,8 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+#[allow(unused_imports)]
+use defmt::{debug, error, info, trace, warn};
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver as RpUsbDriver, Endpoint, In, InterruptHandler, Out};
@@ -216,6 +218,9 @@ impl UsbStack {
 // Method to run the USB stack.
 #[embassy_executor::task]
 pub async fn usb_task(usb: &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>>) -> ! {
+    let core = embassy_rp::pac::SIO.cpuid().read();
+    info!("Core{}: USB task started", core);
+
     // Run the USB Device runner.  This loop is the internal implemenation of
     // usb.run().
     loop {

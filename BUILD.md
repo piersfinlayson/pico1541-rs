@@ -24,7 +24,7 @@ probe-rs complete install
 
 ### Install Rust
 
-Skip if already installed.
+Skip if already installed.  Any modern version of Rust should be fine - pico1541-rs was primarily developed using 1.83 and 1.85.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -37,7 +37,8 @@ You
 Assuming you have Rust already installed
 
 ```bash
-rustup target add thumbv6m-none-eabi
+rustup target add thumbv6m-none-eabi         # For Pico
+rustup target add thumbv8m.main-none-eabihf  # For Pico 2
 ```
 
 ## Build and Flash the Firmware

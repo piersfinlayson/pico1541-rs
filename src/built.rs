@@ -6,11 +6,10 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use core::sync::atomic::Ordering;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 
-use crate::wifi::IS_WIFI;
+use crate::wifi::is_wifi_supported;
 
 // Import the build-time information from the `built.rs` output file generated
 // during the build process by `build.rs`.
@@ -33,7 +32,7 @@ pub use built_info::PKG_VERSION;
 /// Log build-time information to the console.
 pub fn log_fw_info(bin_name: &str, serial: &str) {
     // Find out if WiFi supported
-    let is_wifi = IS_WIFI.load(Ordering::Relaxed);
+    let is_wifi = is_wifi_supported();
 
     // Figure out what hardware platform we're running on
     let hardware = if cfg!(feature = "pico") {

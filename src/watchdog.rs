@@ -191,6 +191,9 @@ impl Task {
 /// feed the watchdog in the appropriate timeframe, and if not causes a reset.
 #[embassy_executor::task]
 pub async fn watchdog_task() -> ! {
+    let core = embassy_rp::pac::SIO.cpuid().read();
+    info!("Core{}: Watchdog task started", core);
+
     // Start the watchdog
     WATCHDOG.lock(|w| {
         w.borrow_mut()

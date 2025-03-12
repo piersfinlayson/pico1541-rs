@@ -54,7 +54,7 @@ impl Bulk {
             // Wait for the read (IN) endpoint to be enabled.  We can wait
             // forever, as we don't watchdog police this task.
             self.read_ep.wait_enabled().await;
-            debug!("OUT Endpoint enabled");
+            info!("OUT Endpoint enabled - ready to receive OUT bulk transfers");
 
             // Device is now ready.
             update_status(DisplayType::Ready);
@@ -102,7 +102,7 @@ impl Bulk {
             // If we broke out of the read loop we need to update the
             // device status
             update_status(DisplayType::Init);
-            debug!("OUT Endpoint disabled");
+            info!("OUT Endpoint disabled - will not receive OUT bulk transfers until re-enabled");
         }
     }
 }

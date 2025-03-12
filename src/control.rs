@@ -60,10 +60,10 @@ impl Handler for Control {
     fn enabled(&mut self, enabled: bool) {
         match enabled {
             true => {
-                debug!("USB device enabled");
+                trace!("USB device enabled");
             }
             false => {
-                info!("USB device disabled");
+                trace!("USB device disabled");
             }
         }
         update_status(DisplayType::Init);
@@ -72,20 +72,20 @@ impl Handler for Control {
 
     /// Called after a USB reset after the bus reset sequence is complete.
     fn reset(&mut self) {
-        debug!("USB device reset complete");
+        trace!("USB device reset complete");
         self.set_action(ProtocolAction::Uninitialize);
     }
 
     /// Called when the host has set the address of the device to `addr`.
     fn addressed(&mut self, addr: u8) {
-        debug!("USB device addressed: {}", addr);
+        trace!("USB device addressed: {}", addr);
     }
 
     /// Called when the host has enabled or disabled the configuration of the device.
     fn configured(&mut self, configured: bool) {
         match configured {
-            true => debug!("USB device configuration enabled"),
-            false => debug!("USB device configuration disabled"),
+            true => trace!("USB device configuration enabled"),
+            false => trace!("USB device configuration disabled"),
         }
         update_status(DisplayType::Init);
         self.set_action(ProtocolAction::Uninitialize);

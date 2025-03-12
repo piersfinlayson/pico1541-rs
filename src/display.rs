@@ -213,7 +213,7 @@ impl StatusDisplay {
 pub async fn status_task() -> ! {
     // Get the core number, in order to log it.
     let core = embassy_rp::pac::SIO.cpuid().read();
-    debug!("Core{}: Status display task started", core);
+    info!("Core{}: Status display task started", core);
 
     // Create the status display object
     let mut display = StatusDisplay::new().await;
