@@ -95,11 +95,11 @@ impl Handler for Control {
     fn suspended(&mut self, suspended: bool) {
         match suspended {
             true => {
-                debug!("USB device suspended");
+                info!("USB device suspended");
                 update_status(DisplayType::Init);
             }
             false => {
-                debug!("USB device resumed");
+                info!("USB device resumed");
             }
         }
 
