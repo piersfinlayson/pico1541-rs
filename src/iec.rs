@@ -595,6 +595,32 @@ impl ProtocolDriver for IecDriver {
     fn clear_eoi(&mut self) {
         self.eoi = false;
     }
+
+    // Writes a byte to the parallel port.
+    // LSB is dio[0], and the MSB is dio[7]
+    fn write_pp_byte(&mut self, val: u8) {
+        // Iterate through all 8 bits
+        for ii in 0..8 {
+            // Set pin high or low based on the corresponding bit in val
+            self.bus.dio[ii].set_output((val >> ii) & 1 == 1);
+        }
+    }
+
+    // Reads a byte from the parallel port
+    // LSB is dio[0] and MSB is dio[7]
+    fn read_pp_byte(&mut self) -> u8 {
+        let mut val = 0;
+
+        // Iterate through all 8 bits
+        for ii in 0..8 {
+            // Read the bit and set the corresponding bit in val
+            if self.bus.dio[ii].read_pin() {
+                val |= (self.bus.dio[ii].read_pin() as u8) << ii;
+            }
+        }
+
+        val
+    }
 }
 
 // Implementations of write for the various supported protocols
@@ -1107,16 +1133,6 @@ impl IecDriver {
         Ok(2)
     }
 
-    // Writes a byte to the parallel port.
-    // LSB is dio[0], and the MSB is dio[7]
-    fn write_pp_byte(&mut self, val: u8) {
-        // Iterate through all 8 bits
-        for ii in 0..8 {
-            // Set pin high or low based on the corresponding bit in val
-            self.bus.dio[ii].set_output((val >> ii) & 1 == 1);
-        }
-    }
-
     async fn non_cbm_read(&mut self, len: u16, protocol: ProtocolType) -> Result<u16, DriverError> {
         // Check we can send bytes before we get started, so we don't have to
         // pause in the middle of a transfer.  We could just wait for one byte
@@ -1301,22 +1317,6 @@ impl IecDriver {
         self.bus.set_clock();
 
         Ok(2)
-    }
-
-    // Reads a byte from the parallel port
-    // LSB is dio[0] and MSB is dio[7]
-    fn read_pp_byte(&mut self) -> u8 {
-        let mut val = 0;
-
-        // Iterate through all 8 bits
-        for ii in 0..8 {
-            // Read the bit and set the corresponding bit in val
-            if self.bus.dio[ii].read_pin() {
-                val |= (self.bus.dio[ii].read_pin() as u8) << ii;
-            }
-        }
-
-        val
     }
 }
 

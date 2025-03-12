@@ -131,6 +131,12 @@ pub trait ProtocolDriver {
     fn check_abort(&self) -> bool {
         check_abort()
     }
+
+    /// Write a byte to the parallel port.
+    fn write_pp_byte(&mut self, byte: u8);
+
+    /// Read a byte from the parallel port.
+    fn read_pp_byte(&mut self) -> u8;
 }
 
 pub enum Driver {
@@ -213,6 +219,21 @@ impl ProtocolDriver for Driver {
             Driver::Iec(driver) => driver.clear_eoi(),
             Driver::Ieee(driver) => driver.clear_eoi(),
             Driver::Tape(driver) => driver.clear_eoi(),
+        }
+    }
+
+    fn write_pp_byte(&mut self, byte: u8) {
+        match self {
+            Driver::Iec(driver) => driver.write_pp_byte(byte),
+            Driver::Ieee(driver) => driver.write_pp_byte(byte),
+            Driver::Tape(driver) => driver.write_pp_byte(byte),
+        }
+    }
+    fn read_pp_byte(&mut self) -> u8 {
+        match self {
+            Driver::Iec(driver) => driver.read_pp_byte(),
+            Driver::Ieee(driver) => driver.read_pp_byte(),
+            Driver::Tape(driver) => driver.read_pp_byte(),
         }
     }
 }

@@ -544,6 +544,25 @@ impl ProtocolHandler {
                 })
                 .await;
             }
+            CommandType::PpRead => {
+                debug!("PP Read");
+                let byte = DRIVER.lock().await.as_mut().unwrap().read_pp_byte();
+                self.send_status(Status {
+                    code: StatusCode::Ok,
+                    value: byte as u16,
+                })
+                .await;
+            }
+            CommandType::PpWrite => {
+                debug!("PP Write");
+                let byte = command.bytes[1];
+                DRIVER.lock().await.as_mut().unwrap().write_pp_byte(byte);
+                self.send_status(Status {
+                    code: StatusCode::Ok,
+                    value: 0,
+                })
+                .await;
+            }
 
             // The rest are unsupported - just drop
             _ => {
@@ -1100,11 +1119,7 @@ pub enum ProtocolType {
 impl ProtocolType {
     /// Whether the Protocol is supported
     fn supported(&self) -> bool {
-        matches!(self, Self::Cbm |
-            Self::S1 |
-            Self::S2 |
-            Self::PP |
-            Self::P2)
+        matches!(self, Self::Cbm | Self::S1 | Self::S2 | Self::PP | Self::P2)
     }
 
     fn write_send_status(&self) -> bool {

@@ -57,4 +57,12 @@ impl ProtocolDriver for IeeeDriver {
     fn clear_eoi(&mut self) {
         unimplemented!()
     }
+
+    fn write_pp_byte(&mut self, byte: u8) {
+        unimplemented!()
+    }
+
+    fn read_pp_byte(&mut self) -> u8 {
+        unimplemented!()
+    }
 }
