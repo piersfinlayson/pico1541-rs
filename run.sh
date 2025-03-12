@@ -36,14 +36,6 @@ TARGET=$(get_target "$BOARD")
 # Print run information
 echo "Running $BIN for $BOARD (target: $TARGET)"
 
-# Check if the binary exists before attempting to run
-BINARY_PATH="target/$TARGET/$BUILD_DIR/$BIN"
-if [ ! -f "$BINARY_PATH" ]; then
-    echo "Error: Binary not found at $BINARY_PATH" >&2
-    echo "Try building it first with: ./build.sh $BIN $BOARD $BUILD_TYPE" >&2
-    exit 1
-fi
-
 # Execute cargo run with the appropriate parameters
 set -x
 cargo run --bin "$BIN" --features "$BIN,$BOARD" --target "$TARGET" $RELEASE_FLAG
