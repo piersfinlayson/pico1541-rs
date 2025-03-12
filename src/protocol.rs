@@ -25,7 +25,10 @@ use crate::constants::{
     USB_DATA_TRANSFER_WAIT_TIMER,
 };
 use crate::display::{update_status, DisplayType};
-use crate::driver::{abort, clear_abort, driver_in_use, raw_read_task, raw_write_task, Driver, ProtocolDriver, DRIVER};
+use crate::driver::{
+    abort, clear_abort, driver_in_use, raw_read_task, raw_write_task, Driver, ProtocolDriver,
+    DRIVER,
+};
 use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
 use crate::iec::{IecBus, IecDriver, Line};
 use crate::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
@@ -205,12 +208,10 @@ impl ProtocolHandler {
         );
 
         // Create array of Digital IO pins
-        let dios = core::array::from_fn(|ii|
-            Dio {
-                pin_num: self.ieee_pins.d_io[ii],
-                pin: Some(self.gpios[self.ieee_pins.d_io[ii] as usize].take().unwrap()),
-            }
-        );
+        let dios = core::array::from_fn(|ii| Dio {
+            pin_num: self.ieee_pins.d_io[ii],
+            pin: Some(self.gpios[self.ieee_pins.d_io[ii] as usize].take().unwrap()),
+        });
 
         // Create the bus
         let iec_bus = IecBus::new(clock_line, data_line, atn_line, reset_line, srq_line, dios);
@@ -389,12 +390,15 @@ impl ProtocolHandler {
             warn!("Driver in use - drop command {}", command.command);
             update_status(DisplayType::Error);
             return;
-        } 
+        }
 
         match command.command {
             // Create a new OUT/write transfer.
             CommandType::Write => {
-                debug!("Host to WRITE {} bytes, protocol {}, {}", command.len, command.protocol, command.flags);
+                debug!(
+                    "Host to WRITE {} bytes, protocol {}, {}",
+                    command.len, command.protocol, command.flags
+                );
 
                 if !command.protocol.supported() {
                     // Try to send an error
@@ -434,7 +438,10 @@ impl ProtocolHandler {
 
             // Create a new IN/read transfer.
             CommandType::Read => {
-                debug!("Host to READ {} bytes, protocol {}", command.len, command.protocol);
+                debug!(
+                    "Host to READ {} bytes, protocol {}",
+                    command.len, command.protocol
+                );
 
                 if !command.protocol.supported() {
                     // Send a zero length packet (we don't send status in
@@ -1218,7 +1225,7 @@ impl defmt::Format for Status {
 pub struct Dio {
     pub pin_num: u8,
     pub pin: Option<Flex<'static>>,
-} 
+}
 
 impl Dio {
     #[inline(always)]

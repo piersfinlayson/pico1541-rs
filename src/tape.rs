@@ -33,7 +33,12 @@ impl ProtocolDriver for TapeDriver {
         unimplemented!()
     }
 
-    async fn wait(&mut self, line: u8, state: u8, timeout: Option<Duration>) -> Result<(), DriverError> {
+    async fn wait(
+        &mut self,
+        line: u8,
+        state: u8,
+        timeout: Option<Duration>,
+    ) -> Result<(), DriverError> {
         unimplemented!()
     }
 

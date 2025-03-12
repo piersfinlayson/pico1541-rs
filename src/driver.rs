@@ -6,12 +6,12 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+use core::sync::atomic::{AtomicBool, Ordering};
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_time::Duration;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
-use core::sync::atomic::{AtomicBool, Ordering};
+use embassy_time::Duration;
 
 use crate::iec::IecDriver;
 use crate::ieee::IeeeDriver;
@@ -26,7 +26,7 @@ use crate::transfer::{UsbDataTransfer, UsbTransferResponse};
 // A static for the current driver in use.
 pub static DRIVER: Mutex<ThreadModeRawMutex, Option<Driver>> = Mutex::new(None);
 
-// Static used to signal to a driver task whether it should abort. 
+// Static used to signal to a driver task whether it should abort.
 pub static ABORT_DRIVER_TASK: AtomicBool = AtomicBool::new(false);
 
 /// Defines errors for ProtocolDriver implementations.
@@ -100,7 +100,12 @@ pub trait ProtocolDriver {
     ///
     /// # Returns
     /// Ok(()) if the line reached the desired state otherwise an error
-    async fn wait(&mut self, line: u8, state: u8, timeout: Option<Duration>) -> Result<(), DriverError>;
+    async fn wait(
+        &mut self,
+        line: u8,
+        state: u8,
+        timeout: Option<Duration>,
+    ) -> Result<(), DriverError>;
 
     /// Poll the current state of the bus lines.
     ///
@@ -166,7 +171,12 @@ impl ProtocolDriver for Driver {
         }
     }
 
-    async fn wait(&mut self, line: u8, state: u8, timeout: Option<Duration>) -> Result<(), DriverError> {
+    async fn wait(
+        &mut self,
+        line: u8,
+        state: u8,
+        timeout: Option<Duration>,
+    ) -> Result<(), DriverError> {
         match self {
             Driver::Iec(driver) => driver.wait(line, state, timeout).await,
             Driver::Ieee(driver) => driver.wait(line, state, timeout).await,

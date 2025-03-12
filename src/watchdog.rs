@@ -8,11 +8,11 @@
 use core::cell::RefCell;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::watchdog::ResetReason;
 use embassy_rp::peripherals::WATCHDOG as P_RpWatchdog;
+use embassy_rp::watchdog::ResetReason;
 use embassy_rp::watchdog::Watchdog as RpWatchdog;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
-use embassy_time::{Duration, Instant, Timer, Delay};
+use embassy_time::{Delay, Duration, Instant, Timer};
 use embedded_hal::delay::DelayNs;
 use rp2040_rom::ROM;
 
