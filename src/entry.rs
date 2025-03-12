@@ -20,9 +20,12 @@ use crate::usb::{usb_task, UsbStack};
 use crate::watchdog::{watchdog_task, Watchdog};
 use crate::wifi::{spawn_wifi, WiFi};
 
-// Our main function.  This is the entry point for our application and like
-// most embedded implementations, we do not want it to exit as that would mean
-// the device has halted.
+
+/// The main function.  This is the entry point for our application and like
+/// most embedded implementations, we do not want it to exit as that would
+/// mean the device has halted.
+///
+/// See [`task.rs`] for an explanation of the multi-core strategy.
 pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // Get device peripherals.  This gives us access to the hardware - like
     // the USB and Watchdog.  We extract the ones we need to avoid having to
@@ -74,6 +77,21 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     let mut p_dma_ch0 = p_dma_ch0;
     let (log_serial, usb_serial) = get_serial(&mut p_flash, &mut p_dma_ch0).await;
 
+    // Set up the watchdog - stores it in the WATCHDOG static.  We do this
+    // before we create any tasks (as they might try and access the static
+    // once that's happened, in order to feed it).
+    Watchdog::create_static(p_watchdog);
+
+    // Spawn the watchdog task.  We do this very early, in case there's some
+    // kind on hang on core 0, and we're unable to feed it - this will cause
+    // the hardware watchdog to reset the device.
+    //
+    // It's fine to spawn the watchdog before the other tasks, because the
+    // other tasks themselves register with the watchdog when starting up.
+    // Therefore, they should be running and feeding the watchdog before it
+    // starts checking.
+    spawn_or_reboot_yield(spawner.spawn(watchdog_task()), "Watchdog").await;
+
     // Create the Gpio object, which manages the pins
     Gpio::create_static(
         pin_0, pin_1, pin_2, pin_3, pin_4, pin_5, pin_6, pin_7, pin_8, pin_9, pin_10, pin_11,
@@ -96,21 +114,6 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // initializing WiFi so it's done as early as possible (and initializing
     // WiFi involves writing some firmware to the WiFi chip).
     log_fw_info(bin_name, log_serial);
-
-    // Set up the watchdog - stores it in the WATCHDOG static.  We do this
-    // before we create any tasks (as they might try and access the static
-    // once that's happened, in order to feed it).
-    Watchdog::create_static(p_watchdog);
-
-    // See [`task.rs`] for an explanation of the multi-core strategy.
-
-    // Spawn the watchdog task.
-    //
-    // It's fine to spawn the watchdog before the other tasks, because the
-    // other tasks themselves register with the watchdog when starting up.
-    // Therefore, they should be running and feeding the watchdog before it
-    // starts checking.
-    spawn_or_reboot_yield(spawner.spawn(watchdog_task()), "Watchdog").await;
 
     // Now attempt to initialize WiFi and spawm the WiFi tasks.  If this
     // hardware doesn't support WiFi, WiFi::init() will return None, so we
@@ -152,6 +155,8 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
 pub fn defmt_panic_handler() -> ! {
     error!("Hit defmt panic handler");
 
+    // Pause for a bit to give any logs time to be received - althought its
+    // not clear this will help, as one core is stuck in this panic handler.s
     let wait_until = embassy_time::Instant::now() + embassy_time::Duration::from_millis(1000);
     while embassy_time::Instant::now() < wait_until {
         cortex_m::asm::nop();
