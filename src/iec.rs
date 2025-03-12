@@ -655,7 +655,7 @@ impl IecDriver {
         // then this check fails - and corresponds to a device present but
         // powered off.  If we stayed, we'd get stuck in wait_for_listener().
         if !self.wait_timeout_2ms(IO_ATN | IO_RESET, 0) {
-            error!("Raw Write: No devices present on the bus");
+            info!("Raw Write: No devices present on the bus");
             debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
             // TO DO - async read handling
             return Err((DriverError::NoDevices, 0));
@@ -676,7 +676,7 @@ impl IecDriver {
         // Wait for any device to pull data after we set CLK.
         // This should be IEC_T_AT (1ms) but allow a bit longer.
         if !self.wait_timeout_2ms(IO_DATA, IO_DATA) {
-            error!("Raw Write: No devices detected");
+            info!("Raw Write: No devices detected");
             debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins() & IO_DATA);
             self.bus.release_lines(IO_CLK | IO_ATN);
             return Err((DriverError::NoDevices, 0));
@@ -699,7 +699,7 @@ impl IecDriver {
 
             // Be sure DATA line has been pulled by device
             if !self.bus.get_data() {
-                error!("Raw write: Device not present");
+                info!("Raw write: Device not present");
                 break Err(DriverError::NoDevice);
             }
 
@@ -707,7 +707,7 @@ impl IecDriver {
 
             // Release CLK and wait for listener to release data
             if !self.wait_for_listener().await {
-                error!("Raw write: No listener");
+                info!("Raw write: No listener");
                 break Err(DriverError::Timeout);
             }
 
@@ -727,7 +727,7 @@ impl IecDriver {
                 count += 1;
                 delay_block_us!(IEC_T_BB);
             } else {
-                error!("Raw write: io err");
+                info!("Raw write: io err");
                 // TODO - async read handling
                 break Err(DriverError::Io);
             }
@@ -857,7 +857,7 @@ impl IecDriver {
                     delay_block_us!(50);
                 }
                 Err(e) => {
-                    error!("Raw read: error receiving byte");
+                    info!("Raw read: error receiving byte");
                     break Err((e, count));
                 }
             }
@@ -1355,7 +1355,7 @@ impl IecDriver {
         // Wait for device to release DATA
         while self.bus.get_data() {
             if self.check_abort() {
-                warn!("Aborted waiting for listener");
+                info!("Aborted waiting for listener");
                 return false;
             }
             delay_yield!(LISTENER_WAIT_INTERVAL);
@@ -1393,7 +1393,7 @@ impl IecDriver {
         // Wait for acknowledgement
         let ack = self.wait_timeout_2ms(IO_DATA, IO_DATA);
         if !ack {
-            error!("send_byte: no ack");
+            info!("send_byte: no ack");
         }
         ack
     }
@@ -1402,7 +1402,7 @@ impl IecDriver {
     async fn receive_byte(&mut self) -> Result<u8, DriverError> {
         // Wait for CLK to be asserted (pulled low)
         if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
-            error!("Receive byte: no clock");
+            info!("Receive byte: no clock");
             return Err(DriverError::Timeout);
         }
 
@@ -1412,7 +1412,7 @@ impl IecDriver {
         for _bit in 0..8 {
             // Wait for CLK to be released (high)
             if !self.wait_timeout_2ms(IO_CLK, 0) {
-                error!("Receive byte: clock not released");
+                info!("Receive byte: clock not released");
                 return Err(DriverError::Timeout);
             }
 
@@ -1424,7 +1424,7 @@ impl IecDriver {
 
             // Wait for CLK to be asserted again
             if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
-                error!("Receive byte: no clock in loop");
+                info!("Receive byte: no clock in loop");
                 return Err(DriverError::Timeout);
             }
         }
@@ -1509,7 +1509,7 @@ impl IecDriver {
 
                 // Check if we should cancel
                 if device.check_abort() {
-                    warn!("Aborted waiting for free bus");
+                    info!("Aborted waiting for free bus");
                     return Err(DriverError::Abort);
                 }
 
@@ -1529,7 +1529,7 @@ impl IecDriver {
             match with_timeout(BUS_FREE_TIMEOUT, check_bus_until_free(self)).await {
                 Ok(result) => result,
                 Err(_timeout_error) => {
-                    warn!("Timed out waiting for the bus to be free (expected if no drive");
+                    info!("Timed out waiting for the bus to be free (expected if no drive");
                     Err(DriverError::Timeout)
                 }
             }
@@ -1631,7 +1631,7 @@ impl IecDriver {
             Timer::after(PROTOCOL_YIELD_TIMER).await;
 
             if self.check_abort() {
-                warn!("Aborted in yield, feed and maybe abort");
+                info!("Aborted in yield, feed and maybe abort");
                 break Err(DriverError::Abort);
             }
         }

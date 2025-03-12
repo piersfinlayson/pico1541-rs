@@ -155,7 +155,11 @@ pub trait ProtocolDriver {
     /// Checks whether the task should abort
     #[inline(always)]
     fn check_abort(&self) -> bool {
-        check_abort()
+        let abort = check_abort();
+        if abort {
+            warn!("Aborting driver task");
+        }
+        abort
     }
 
     /// Write a byte to the parallel port.
@@ -377,14 +381,14 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
 /// Helper function to abort the driver task.
 #[inline(always)]
 pub fn abort() {
-    info!("Aborting driver task");
+    trace!("Aborting driver task");
     ABORT_DRIVER_TASK.store(true, Ordering::SeqCst);
 }
 
 /// Helper function to clear the driver task abort.
 #[inline(always)]
 pub fn clear_abort() {
-    info!("Deasserting driver task abort");
+    trace!("Deasserting driver task abort");
     ABORT_DRIVER_TASK.store(false, Ordering::SeqCst);
 }
 
