@@ -441,7 +441,7 @@ impl ProtocolDriver for IecDriver {
             }
         };
 
-        debug!("Raw write completed with result {:?}", result);
+        trace!("Raw write completed with result {:?}", result);
         result
     }
 
@@ -683,118 +683,6 @@ impl IecDriver {
             }
         }
     }
-}
-
-// Implementations of read for the various supported protocols
-impl IecDriver {
-    /// Implements standard Commodore IEC read support
-    ///
-    /// Timing is critical in this function, so we use block_us.
-    async fn cbm_read(&mut self, len: u16) -> Result<u16, (DriverError, u16)> {
-        let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
-
-        let mut count: u16 = 0;
-        let mut buf_count: usize = 0;
-        self.eoi = false;
-
-        trace!("CBM Read: Requested {} bytes", len);
-
-        // Check we can send bytes before we get started, so we don't have to
-        // pause in the middle of a transfer.  We could just wait for one byte
-        // of space, but we'll wait for enough space for an entire USB packet
-        // as the buffer should be twice that size.
-        UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
-
-        // Main read loop
-        let result = loop {
-            trace!(
-                "raw_read Loop start: count {}, buf_count {}",
-                count,
-                buf_count
-            );
-
-            // Wait for clock to be released, with 1s timeout.  Timing isn't
-            // particularly critical here, so we can yield.
-            if let Err(e) = self
-                .wait_timeout_yield(IO_CLK, 0, READ_CLK_TIMEOUT, true)
-                .await
-            {
-                break Err((e, count));
-            }
-
-            // Break if we've already seen EOI
-            if self.eoi {
-                debug!("Raw read: EOI detected at {} bytes", count);
-                break Ok(count);
-            }
-
-            // Release DATA line to signal we're ready for data
-            self.bus.release_data();
-
-            // Wait up to 400us for CLK to be pulled by the drive
-            let clock = self.wait_timeout_block(IO_CLK, IO_CLK, Duration::from_micros(400));
-
-            // Check for EOI signalling from talker
-            if !clock {
-                debug!("Clock high - so EOI signalled");
-                self.eoi = true;
-                self.bus.set_data();
-                block_us!(70);
-                self.bus.release_data();
-            }
-
-            // Read the byte
-            match self.receive_byte().await {
-                Ok(byte) => {
-                    // Acknowledge byte received by pulling DATA
-                    self.bus.set_data();
-                    trace!("Read byte #{}", count);
-
-                    // Store the byte in our buffer
-                    buffer[buf_count] = byte;
-                    buf_count += 1;
-                    count += 1;
-
-                    block_us!(50);
-                }
-                Err(e) => {
-                    info!("Raw read: error receiving byte");
-                    break Err((e, count));
-                }
-            }
-
-            // Send the data if we've filled up a USB packet, or we're
-            // finished reading.
-            if buf_count >= MAX_EP_PACKET_SIZE_USIZE || count >= len {
-                match Self::send_data_to_host(&buffer, buf_count).await {
-                    Ok(_) => {}
-                    Err(e) => break Err((e, count)),
-                }
-                buf_count = 0;
-            }
-
-            feed_watchdog(TaskId::ProtocolHandler);
-
-            // Check if we're finished
-            if count >= len {
-                info!("Raw read: received {} bytes and forwarded to host", count);
-                break Ok(count);
-            }
-        };
-
-        if buf_count > 0 {
-            // Send any remaining data.  There should be fewer than 64
-            // bytes of data to send, as we should have sent the data
-            // immediately after hitting 64 bytes.
-            debug!("Hit error reading, sending outstanding {} bytes", buf_count);
-            assert!(buf_count < MAX_EP_PACKET_SIZE_USIZE);
-            Self::send_data_to_host(&buffer, buf_count)
-                .await
-                .map_err(|e| (e, count))?;
-        }
-
-        result
-    }
 
     async fn non_cbm_write(
         &mut self,
@@ -1026,6 +914,119 @@ impl IecDriver {
         self.bus.set_clock();
 
         Ok(2)
+    }
+}
+
+// Implementations of read for the various supported protocols
+impl IecDriver {
+    /// Implements standard Commodore IEC read support
+    ///
+    /// Timing is critical in this function, so we use block_us.
+    async fn cbm_read(&mut self, len: u16) -> Result<u16, (DriverError, u16)> {
+        let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
+
+        let mut count: u16 = 0;
+        let mut buf_count: usize = 0;
+        self.eoi = false;
+
+        trace!("CBM Read: Requested {} bytes", len);
+
+        // Check we can send bytes before we get started, so we don't have to
+        // pause in the middle of a transfer.  We could just wait for one byte
+        // of space, but we'll wait for enough space for an entire USB packet
+        // as the buffer should be twice that size.
+        UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
+
+        // Main read loop
+        let result = loop {
+            trace!(
+                "raw_read Loop start: count {}, buf_count {}",
+                count,
+                buf_count
+            );
+
+            // Wait for clock to be released, with 1s timeout.  Timing isn't
+            // particularly critical here, so we can yield.
+            if let Err(e) = self
+                .wait_timeout_yield(IO_CLK, 0, READ_CLK_TIMEOUT, true)
+                .await
+            {
+                break Err((e, count));
+            }
+
+            // Break if we've already seen EOI
+            if self.eoi {
+                debug!("Raw read: EOI detected at {} bytes", count);
+                break Ok(count);
+            }
+
+            // Release DATA line to signal we're ready for data
+            self.bus.release_data();
+
+            // Wait up to 400us for CLK to be pulled by the drive
+            let clock = self.wait_timeout_block(IO_CLK, IO_CLK, Duration::from_micros(400));
+
+            // Check for EOI signalling from talker
+            if !clock {
+                debug!("Clock high - so EOI signalled");
+                self.eoi = true;
+                self.bus.set_data();
+                block_us!(70);
+                self.bus.release_data();
+            }
+
+            // Read the byte
+            match self.receive_byte().await {
+                Ok(byte) => {
+                    // Acknowledge byte received by pulling DATA
+                    self.bus.set_data();
+                    trace!("Read byte #{}", count);
+
+                    // Store the byte in our buffer
+                    buffer[buf_count] = byte;
+                    buf_count += 1;
+                    count += 1;
+
+                    block_us!(50);
+                }
+                Err(e) => {
+                    info!("Raw read: error receiving byte");
+                    break Err((e, count));
+                }
+            }
+
+            // Send the data if we've filled up a USB packet.  If we're
+            // finished reading, we'll send the outstanding packets outside
+            // the loop.
+            if buf_count >= MAX_EP_PACKET_SIZE_USIZE {
+                match Self::send_data_to_host(&buffer, buf_count).await {
+                    Ok(_) => {}
+                    Err(e) => break Err((e, count)),
+                }
+                buf_count = 0;
+            }
+
+            feed_watchdog(TaskId::ProtocolHandler);
+
+            // Check if we're finished
+            if count >= len {
+                trace!("Raw read: received {} bytes and forwarded to host", count);
+                break Ok(count);
+            }
+        };
+
+        if buf_count > 0 {
+            // Send any remaining data.  There should be fewer than 64
+            // bytes of data to send, as we should have sent the data
+            // immediately after hitting 64 bytes.
+            trace!("CBM Read, before exit send outstanding {} bytes", buf_count);
+            assert!(buf_count < MAX_EP_PACKET_SIZE_USIZE);
+            Self::send_data_to_host(&buffer, buf_count)
+                .await
+                .map_err(|e| (e, count))?;
+        }
+
+        result
     }
 
     async fn non_cbm_read(
