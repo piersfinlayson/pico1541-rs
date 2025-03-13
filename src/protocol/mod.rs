@@ -9,7 +9,7 @@
 mod driver;
 mod iec;
 mod ieee;
-mod read_non_cbm;
+mod read;
 mod tape;
 pub(crate) mod types;
 

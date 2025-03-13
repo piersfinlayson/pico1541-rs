@@ -65,11 +65,12 @@ pub const USB_DATA_TRANSFER_WAIT_TIMER: Duration = Duration::from_micros(1);
 // How long the WiFi Control task will wait before feeding the watchdog.
 pub const WIFI_CONTROL_WAIT_TIMER: Duration = Duration::from_millis(100);
 
-// How long to yield in Commodore drive protocol methods.
-pub const PROTOCOL_YIELD_TIMER_MS: u64 = 1;
+// How long to yield in Commodore drive protocol methods.  This matches the
+// value using the xum1541 (iec.c iec_wait()).
+pub const PROTOCOL_YIELD_TIMER_US: u64 = 10;
 
 // How long to yield in Commodore drive protocol methods.
-pub const PROTOCOL_YIELD_TIMER: Duration = Duration::from_micros(PROTOCOL_YIELD_TIMER_MS);
+pub const PROTOCOL_YIELD_TIMER: Duration = Duration::from_micros(PROTOCOL_YIELD_TIMER_US);
 
 //
 // USB device configuration constants.

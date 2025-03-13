@@ -14,14 +14,13 @@ use super::driver::{DriverError, ProtocolDriver};
 use super::{Dio, ProtocolFlags, ProtocolType};
 
 use crate::constants::{
-    MAX_EP_PACKET_SIZE_USIZE, PROTOCOL_YIELD_TIMER, PROTOCOL_YIELD_TIMER_MS,
-    USB_DATA_TRANSFER_WAIT_TIMER,
+    PROTOCOL_YIELD_TIMER, PROTOCOL_YIELD_TIMER_US, USB_DATA_TRANSFER_WAIT_TIMER,
 };
 use crate::infra::watchdog::{feed_watchdog, TaskId};
 use crate::usb::transfer::UsbDataTransfer;
 use crate::util::time::iec::{
     BUS_FREE_CHECK_YIELD, BUS_FREE_TIMEOUT, FOREVER_TIMEOUT, IEC_T_BB, IEC_T_NE, IEC_T_R, IEC_T_S,
-    IEC_T_V, LISTENER_WAIT_INTERVAL, READ_CLK_TIMEOUT, WRITE_TALK_CLK_TIMEOUT,
+    IEC_T_V, LISTENER_WAIT_INTERVAL, WRITE_TALK_CLK_TIMEOUT,
 };
 use crate::util::time::{block_ns, block_us, iec_delay, yield_for, yield_ms, yield_us};
 
@@ -383,34 +382,9 @@ impl ProtocolDriver for IecDriver {
     ) -> Result<u16, (DriverError, u16)> {
         info!("Raw Read: Protocol: {}, {} bytes requested", protocol, len);
 
-        // Check protocol type
-        match protocol {
-            // Standard CBM IEC read (1541, etc)
-            ProtocolType::Cbm => self.cbm_read(len).await,
-
-            // Non-standard protocol read:
-            // - S1 Faster serial protocol developed for use with 1541 type
-            //   drives.
-            // - S2 Stock Commodore faster serial than S1, used by 1570, 1571
-            //   and 1581.
-            // - PP Parallel protocol, offers improve rates above serial, and
-            //   requires parallel pot mod.
-            // - P2 Parallel protocol 2, faster parallel protocol.
-            //
-            // These are all supported by uploading custom firmware routines
-            // to the drive.  That is outside the scope of the pico1541 - it
-            // is performed by the host software, such as OpenCBM, using the
-            // pico1541 as a data transmission vehicle.
-            ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => {
-                self.non_cbm_read(len, protocol).await
-            }
-
-            // TODO NibCommand, NibSrq, NibSrqCommand, Tap and TapConfig
-            _ => {
-                error!("Raw read: Unsupported protocol type");
-                Err((DriverError::Unsupported, 0))
-            }
-        }
+        // Call the main read() function, which handles all supported
+        // protocols.
+        self.read(len, protocol).await
     }
 
     /// Send data to the drive
@@ -574,7 +548,7 @@ impl IecDriver {
         // Wait until there's some bytes to send before we start so we don't
         // have to pause in the middle of a transfer.
         UsbDataTransfer::lock_wait_outstanding().await;
-        feed_watchdog(TaskId::ProtocolHandler);
+        Self::feed_watchdog();
 
         // Check if any device is present on the bus.  If both lines stay low
         // then this check fails - and corresponds to a device present but
@@ -659,7 +633,7 @@ impl IecDriver {
 
             trace!("Written byte #{} to drive", count);
 
-            feed_watchdog(TaskId::ProtocolHandler);
+            Self::feed_watchdog();
 
             // Break if we've sent all the bytes
             if count >= len {
@@ -715,7 +689,7 @@ impl IecDriver {
         // Wait until there's some bytes to send before we start so we don't
         // have to pause in the middle of a transfer.
         UsbDataTransfer::lock_wait_outstanding().await;
-        feed_watchdog(TaskId::ProtocolHandler);
+        Self::feed_watchdog();
 
         let num_bytes = match protocol {
             ProtocolType::S1 | ProtocolType::S2 | ProtocolType::P2 => 1,
@@ -939,123 +913,20 @@ impl IecDriver {
     }
 }
 
-// Implementations of read for the various supported protocols
-impl IecDriver {
-    /// Implements standard Commodore IEC read support
-    ///
-    /// Timing is critical in this function, so we use block_us.
-    async fn cbm_read(&mut self, len: u16) -> Result<u16, (DriverError, u16)> {
-        let mut buffer = [0u8; MAX_EP_PACKET_SIZE_USIZE];
-
-        let mut count: u16 = 0;
-        let mut buf_count: usize = 0;
-        self.eoi = false;
-
-        trace!("CBM Read: Requested {} bytes", len);
-
-        // Check we can send bytes before we get started, so we don't have to
-        // pause in the middle of a transfer.  We could just wait for one byte
-        // of space, but we'll wait for enough space for an entire USB packet
-        // as the buffer should be twice that size.
-        UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
-
-        // Main read loop
-        let result = loop {
-            trace!(
-                "raw_read Loop start: count {}, buf_count {}",
-                count,
-                buf_count
-            );
-
-            // Wait for clock to be released, with 1s timeout.  Timing isn't
-            // particularly critical here, so we can yield.
-            if let Err(e) = self
-                .wait_timeout_yield(IO_CLK, 0, READ_CLK_TIMEOUT, true)
-                .await
-            {
-                break Err((e, count));
-            }
-
-            // Break if we've already seen EOI
-            if self.eoi {
-                debug!("Raw read: EOI detected at {} bytes", count);
-                break Ok(count);
-            }
-
-            // Release DATA line to signal we're ready for data
-            self.bus.release_data();
-
-            // Wait up to 400us for CLK to be pulled by the drive
-            let clock = self.wait_timeout_block(IO_CLK, IO_CLK, Duration::from_micros(400));
-
-            // Check for EOI signalling from talker
-            if !clock {
-                debug!("Clock high - so EOI signalled");
-                self.eoi = true;
-                self.bus.set_data();
-                block_us!(70);
-                self.bus.release_data();
-            }
-
-            // Read the byte
-            match self.receive_byte().await {
-                Ok(byte) => {
-                    // Acknowledge byte received by pulling DATA
-                    self.bus.set_data();
-                    trace!("Read byte #{}", count);
-
-                    // Store the byte in our buffer
-                    buffer[buf_count] = byte;
-                    buf_count += 1;
-                    count += 1;
-
-                    block_us!(50);
-                }
-                Err(e) => {
-                    info!("Raw read: error receiving byte");
-                    break Err((e, count));
-                }
-            }
-
-            // Send the data if we've filled up a USB packet.  If we're
-            // finished reading, we'll send the outstanding packets outside
-            // the loop.
-            if buf_count >= MAX_EP_PACKET_SIZE_USIZE {
-                match Self::send_data_to_host(&buffer, buf_count).await {
-                    Ok(_) => {}
-                    Err(e) => break Err((e, count)),
-                }
-                buf_count = 0;
-            }
-
-            feed_watchdog(TaskId::ProtocolHandler);
-
-            // Check if we're finished
-            if count >= len {
-                trace!("Raw read: received {} bytes and forwarded to host", count);
-                break Ok(count);
-            }
-        };
-
-        if buf_count > 0 {
-            // Send any remaining data.  There should be fewer than 64
-            // bytes of data to send, as we should have sent the data
-            // immediately after hitting 64 bytes.
-            trace!("CBM Read, before exit send outstanding {} bytes", buf_count);
-            assert!(buf_count < MAX_EP_PACKET_SIZE_USIZE);
-            Self::send_data_to_host(&buffer, buf_count)
-                .await
-                .map_err(|e| (e, count))?;
-        }
-
-        result
-    }
-}
-
-// Other private functions
+// Various other functions
 impl IecDriver {
     pub fn new(bus: IecBus) -> Self {
         Self { bus, eoi: false }
+    }
+
+    #[inline(always)]
+    pub fn feed_watchdog() {
+        feed_watchdog(TaskId::ProtocolHandler);
+    }
+
+    /// Set the End of Indiciation (EOI) status
+    pub fn set_eoi(&mut self) {
+        self.eoi = true;
     }
 
     /// Combined set and release operation
@@ -1090,7 +961,7 @@ impl IecDriver {
                 return false;
             }
             yield_for!(LISTENER_WAIT_INTERVAL);
-            feed_watchdog(TaskId::ProtocolHandler);
+            Self::feed_watchdog();
         }
 
         true
@@ -1129,40 +1000,6 @@ impl IecDriver {
         ack
     }
 
-    /// Receive a single byte from the IEC bus
-    async fn receive_byte(&mut self) -> Result<u8, DriverError> {
-        // Wait for CLK to be asserted (pulled low)
-        if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
-            debug!("Receive byte: no clock");
-            return Err(DriverError::Timeout);
-        }
-
-        let mut byte: u8 = 0;
-
-        // Read 8 bits
-        for _bit in 0..8 {
-            // Wait for CLK to be released (high)
-            if !self.wait_timeout_2ms(IO_CLK, 0) {
-                debug!("Receive byte: clock not released");
-                return Err(DriverError::Timeout);
-            }
-
-            // Read the bit
-            byte >>= 1;
-            if !self.bus.get_data() {
-                byte |= 0x80;
-            }
-
-            // Wait for CLK to be asserted again
-            if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
-                debug!("Receive byte: no clock in loop");
-                return Err(DriverError::Timeout);
-            }
-        }
-
-        Ok(byte)
-    }
-
     /// Wait up to 2ms for lines to reach specified state.
     ///
     /// poll_pins() returns the mask if the pin is high (inactive).
@@ -1183,11 +1020,11 @@ impl IecDriver {
     ///
     /// Timing is considered critical here to wait for around 2ms.  Hence we
     /// use block_us.
-    fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
+    pub fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
         self.wait_timeout_block(mask, state, Duration::from_millis(2))
     }
 
-    fn wait_timeout_block(&mut self, mask: u8, state: u8, timeout: Duration) -> bool {
+    pub fn wait_timeout_block(&mut self, mask: u8, state: u8, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             // Hard loop, as we want to block anyway
@@ -1198,7 +1035,10 @@ impl IecDriver {
         (self.bus.poll_pins() & mask) != state
     }
 
-    async fn wait_timeout_yield(
+    /// Waits for a defined time, feeding the watchdog and checking for abort
+    /// until the lines are _not_ in the specified state.  Returns an error if
+    /// it timed out.
+    pub async fn wait_timeout_yield(
         &mut self,
         mask: u8,
         state: u8,
@@ -1207,23 +1047,30 @@ impl IecDriver {
     ) -> Result<(), DriverError> {
         let deadline = Instant::now() + timeout;
         loop {
-            if (self.bus.poll_pins() & mask) != state {
-                break Ok(());
-            }
-
-            if Instant::now() >= deadline {
-                break Err(DriverError::Timeout);
-            }
-
+            // Feed the watchdog first, just in case we don't go around this
+            // loop again.
             if feed {
-                feed_watchdog(TaskId::ProtocolHandler);
+                Self::feed_watchdog();
             }
 
+            // Next, check if we should abort
             if self.check_abort() {
                 break Err(DriverError::Abort);
             }
 
-            yield_us!(PROTOCOL_YIELD_TIMER_MS)
+            // Thirdy check if the mask is in the opposite to the passed in
+            // state
+            if (self.bus.poll_pins() & mask) != state {
+                break Ok(());
+            }
+
+            // Check if we hit the timeout
+            if Instant::now() >= deadline {
+                break Err(DriverError::Timeout);
+            }
+
+            // Yield, briefly.
+            yield_us!(PROTOCOL_YIELD_TIMER_US)
         }
     }
 
@@ -1248,7 +1095,7 @@ impl IecDriver {
                 yield_for!(BUS_FREE_CHECK_YIELD);
 
                 // Feed the bus
-                feed_watchdog(TaskId::ProtocolHandler);
+                IecDriver::feed_watchdog();
             }
         }
 
@@ -1359,7 +1206,7 @@ impl IecDriver {
                 break Ok(());
             }
 
-            feed_watchdog(TaskId::ProtocolHandler);
+            Self::feed_watchdog();
 
             Timer::after(PROTOCOL_YIELD_TIMER).await;
 

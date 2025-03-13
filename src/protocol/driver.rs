@@ -44,6 +44,8 @@ pub enum DriverError {
     NoDevices,
     /// No device detected
     NoDevice,
+    /// Eoi,
+    Eoi,
 
     // Erors which are signalled back to the host as errors.
     /// The operation was aborted
