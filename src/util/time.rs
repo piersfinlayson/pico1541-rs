@@ -158,6 +158,9 @@ pub mod iec {
     /// reading a byte
     pub const READ_CLK_TIMEOUT: Duration = Duration::from_micros(400);
 
+    /// Time to wait for CLK line to be drive using NIB SRQ write
+    pub const NIB_SRQ_CLK_WRITE_IMEOUT: Duration = Duration::from_micros(100);
+
     /// A "forever" timeout.  We can't use Duration::MAX, as that's a u64, and
     /// causes the underlying embassy_time methods to panic.  So we set it to a
     /// year (ish).

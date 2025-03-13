@@ -109,23 +109,27 @@ impl Line {
     }
 
     /// Drive the output line low (active) - ouptut is inverted pin so high
+    #[inline(always)]
     pub fn set(&mut self) {
         self.output_pin.as_mut().unwrap().set_high();
     }
 
     /// Release the output line (inactive) - output is inverted pin so low
+    #[inline(always)]
     pub fn release(&mut self) {
         self.output_pin.as_mut().unwrap().set_low();
     }
 
     /// Read the current state of the line.  This returns true is the line
     /// is active - as it is not inverted, this means true if low.
+    #[inline(always)]
     pub fn get(&self) -> bool {
         self.input_pin.as_ref().unwrap().is_low()
     }
 
     /// Check if line is currently being driven low - inverted pin so high
     #[allow(dead_code)]
+    #[inline(always)]
     pub fn is_set(&self) -> bool {
         self.output_pin.as_ref().unwrap().is_set_high()
     }
@@ -179,66 +183,81 @@ impl IecBus {
     }
 
     // DATA line control
+    #[inline(always)]
     pub fn set_data(&mut self) {
         self.data.set();
     }
 
+    #[inline(always)]
     pub fn release_data(&mut self) {
         self.data.release();
     }
 
+    #[inline(always)]
     pub fn get_data(&self) -> bool {
         self.data.get()
     }
 
     // CLOCK line control
+    #[inline(always)]
     pub fn set_clock(&mut self) {
         self.clock.set();
     }
 
+    #[inline(always)]
     pub fn release_clock(&mut self) {
         self.clock.release();
     }
 
+    #[inline(always)]
     pub fn get_clock(&self) -> bool {
         self.clock.get()
     }
 
     // ATN line control
+    #[inline(always)]
     pub fn set_atn(&mut self) {
         self.atn.set();
     }
 
+    #[inline(always)]
     pub fn release_atn(&mut self) {
         self.atn.release();
     }
 
+    #[inline(always)]
     pub fn get_atn(&self) -> bool {
         self.atn.get()
     }
 
     // RESET line control
+    #[inline(always)]
     pub fn set_reset(&mut self) {
         self.reset.set();
     }
 
+    #[inline(always)]
     pub fn release_reset(&mut self) {
         self.reset.release();
     }
 
+    #[inline(always)]
     pub fn get_reset(&self) -> bool {
         self.reset.get()
     }
 
     // SRQ line control (if available)
+    #[inline(always)]
     pub fn set_srq(&mut self) {
         self.srq.set();
     }
 
+    #[inline(always)]
     pub fn release_srq(&mut self) {
         self.srq.release();
     }
 
+    #[inline(always)]
     pub fn get_srq(&self) -> bool {
         self.srq.get()
     }
@@ -347,6 +366,10 @@ impl IecBus {
 pub struct IecDriver {
     pub bus: IecBus,
     eoi: bool,
+    suppress_nib_command: bool,
+    pub saved_nib_bytes: [u8; 4],
+    pub current_nib_write: usize,
+    pub cmd_idx: usize,
 }
 
 impl ProtocolDriver for IecDriver {
@@ -489,12 +512,29 @@ impl ProtocolDriver for IecDriver {
 // Various other functions
 impl IecDriver {
     pub fn new(bus: IecBus) -> Self {
-        Self { bus, eoi: false }
+        Self {
+            bus,
+            eoi: false,
+            suppress_nib_command: false,
+            saved_nib_bytes: [0; 4],
+            current_nib_write: 0,
+            cmd_idx: 0,
+        }
     }
 
     #[inline(always)]
     pub fn feed_watchdog() {
         feed_watchdog(TaskId::DriveOperation);
+    }
+
+    /// Get supress_nib_command status
+    pub fn get_suppress_nib_command(&self) -> bool {
+        self.suppress_nib_command
+    }
+
+    /// Set supress_nib_command status
+    pub fn set_suppress_nib_command(&mut self, suppress: bool) {
+        self.suppress_nib_command = suppress;
     }
 
     /// Set the End of Indiciation (EOI) status
@@ -504,7 +544,7 @@ impl IecDriver {
 
     /// Combined set and release operation
     #[inline(always)]
-    pub async fn set_release(&mut self, set: u8, release: u8) {
+    pub fn set_release(&mut self, set: u8, release: u8) {
         self.bus.set_lines(set);
         self.bus.release_lines(release);
     }

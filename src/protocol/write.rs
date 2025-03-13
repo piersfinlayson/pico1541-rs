@@ -17,7 +17,7 @@ use super::ProtocolType;
 use crate::constants::MAX_EP_PACKET_SIZE_USIZE;
 use crate::usb::transfer::UsbDataTransfer;
 use crate::util::time::iec::{
-    IEC_T_BB, IEC_T_NE, IEC_T_R, IEC_T_S, IEC_T_V, WRITE_TALK_CLK_TIMEOUT,
+    IEC_T_BB, IEC_T_NE, IEC_T_R, IEC_T_S, IEC_T_V, NIB_SRQ_CLK_WRITE_IMEOUT, WRITE_TALK_CLK_TIMEOUT,
 };
 use crate::util::time::{block_ns, block_us, iec_delay};
 
@@ -89,19 +89,35 @@ impl IecDriver {
     ) -> Result<(), DriverError> {
         match protocol {
             ProtocolType::Cbm => self.cbm_startup_write(flags).await,
+            ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => Ok(()),
             ProtocolType::Nib => {
+                // Set suppress_nib_command to false
+                self.set_suppress_nib_command(false);
+
                 // Release data line
                 self.bus.release_data();
                 Ok(())
             }
+            ProtocolType::NibCommand => Ok(()),
             ProtocolType::NibSrq => {
+                // Set suppress_nib_command to false
+                self.set_suppress_nib_command(false);
+
                 // Release all lines
                 self.bus.iec_release(IO_SRQ | IO_CLK | IO_DATA | IO_ATN);
+
+                // Process all saved writes
+                for ii in 0..self.current_nib_write {
+                    self.write_nib_srqburst(self.saved_nib_bytes[ii]);
+                }
+                self.current_nib_write = 0;
+
                 Ok(())
             }
-            ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => Ok(()),
-            // TODO NibCommand
-            _ => unreachable!("Non-CBM read: Unsupported protocol type"),
+            ProtocolType::NibSrqCommand => Ok(()),
+            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+                unreachable!("Write: Unsupported protocol type")
+            }
         }
     }
 
@@ -113,8 +129,7 @@ impl IecDriver {
         // powered off.  If we stayed, we'd get stuck in wait_for_listener().
         if !self.wait_timeout_2ms(IO_ATN | IO_RESET, 0) {
             debug!("Raw Write: No devices present on the bus");
-            debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
-            // TO DO - async read handling
+            trace!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
             return Err(DriverError::NoDevices);
         }
 
@@ -155,24 +170,39 @@ impl IecDriver {
     ) -> Result<u16, (DriverError, u16)> {
         match protocol {
             ProtocolType::Cbm => self.cbm_terminate_write(loop_result, flags).await,
-            ProtocolType::Nib => {
-                // TODO
-                // Release data line
-                //nib_write_handshaked(0, i & 1);
-                //nib_parburst_read();
-                loop_result
-            }
-            ProtocolType::NibSrq => {
-                // TODO
-                // Release all lines
-                //nib_srqburst_read();
-                loop_result
-            }
             ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => {
                 loop_result
             }
-            // TODO NibCommand
-            _ => unreachable!("Non-CBM read: Unsupported protocol type"),
+            ProtocolType::Nib => {
+                if let Ok(size) = loop_result {
+                    // As the write succeeded we will terminate, by sending
+                    // a dummy byte and reading back the result.
+                    self.write_nib_handshaked(0, size & 1 == 1);
+
+                    let _ = self.read_nib_parburst();
+                }
+
+                // We don't do any termination if the write failed.
+
+                // Return the previous result
+                loop_result
+            }
+            ProtocolType::NibCommand => loop_result,
+            ProtocolType::NibSrq => {
+                if loop_result.is_ok() {
+                    // Read the last dummy byte and discard it.
+                    let _ = self.read_nib_srqburst();
+                }
+
+                // We don't do any termination if the write failed.
+
+                // Return the previous result
+                loop_result
+            }
+            ProtocolType::NibSrqCommand => loop_result,
+            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+                unreachable!("Write: Unsupported protocol type")
+            }
         }
     }
 
@@ -188,7 +218,7 @@ impl IecDriver {
                     trace!("Put drive into Talk mode");
 
                     // Hold DATA and release ATN
-                    self.set_release(IO_DATA, IO_ATN).await;
+                    self.set_release(IO_DATA, IO_ATN);
 
                     // IEC_T_TK was defined to be -1 in the original
                     // C code which presumably meant to make the
@@ -286,8 +316,12 @@ impl IecDriver {
             ProtocolType::PP => PP_WRITE_ITER_BYTES,
             ProtocolType::P2 => DEFAULT_WRITE_ITER_BYTES,
             ProtocolType::Nib => DEFAULT_WRITE_ITER_BYTES,
+            ProtocolType::NibCommand => DEFAULT_WRITE_ITER_BYTES,
             ProtocolType::NibSrq => DEFAULT_WRITE_ITER_BYTES,
-            _ => unreachable!("Write: Unsupported protocol type"),
+            ProtocolType::NibSrqCommand => DEFAULT_WRITE_ITER_BYTES,
+            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+                unreachable!("Write: Unsupported protocol type")
+            }
         }
     }
 
@@ -312,15 +346,27 @@ impl IecDriver {
             }
             ProtocolType::P2 => self.write_p2(buf[0]).await,
             ProtocolType::Nib => {
-                // TODO
+                self.write_nib_handshaked(buf[0], count & 1 == 1);
                 Ok(1)
             }
-            ProtocolType::NibSrq => {
-                // TODO
+            ProtocolType::NibCommand => {
+                if self.write_nib_check(buf[0]) {
+                    self.write_nib_parburst(buf[0]);
+                }
                 Ok(1)
             }
-
-            _ => unreachable!("Write: Unsupported protocol type"),
+            ProtocolType::NibSrq => self
+                .write_nib_srq_handshaked(buf[0], count & 1 == 1)
+                .map(|_| 1),
+            ProtocolType::NibSrqCommand => {
+                if self.write_nib_check(buf[0]) {
+                    self.write_nib_srqburst(buf[0]);
+                }
+                Ok(1)
+            }
+            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+                unreachable!("Write: Unsupported protocol type")
+            }
         }
     }
 
@@ -393,7 +439,7 @@ impl IecDriver {
             block_us!(IEC_T_V);
 
             // Prepare for next bit
-            self.set_release(IO_CLK, IO_DATA).await;
+            self.set_release(IO_CLK, IO_DATA);
             data >>= 1;
         }
 
@@ -453,7 +499,7 @@ impl IecDriver {
             self.loop_and_yield_while(|| self.bus.get_clock()).await?;
 
             // Set CLK and release DATA
-            self.set_release(IO_CLK, IO_DATA).await;
+            self.set_release(IO_CLK, IO_DATA);
 
             // Pause briefly to allow lines to settle
             iec_delay!();
@@ -588,5 +634,140 @@ impl IecDriver {
         self.loop_and_yield_while(|| !self.bus.get_data()).await?;
 
         Ok(1)
+    }
+
+    fn write_nib_handshaked(&mut self, byte: u8, toggle: bool) {
+        // Wait for data line to match expected direction
+        while self.bus.get_data() != toggle {}
+
+        // Write the byte using the parallel port
+        self.write_pp_byte(byte);
+    }
+
+    fn write_nib_srq_handshaked(&mut self, byte: u8, toggle: bool) -> Result<(), DriverError> {
+        // The original xum1541 code loops around, getting the clock line
+        // status and testing it against toggle 100 times.  We assume each
+        // loop takes 15 instructions, so that's 1,500 instructions total.
+        // At 16MHz that's 93us.  We'll wait 100.
+        // The original code uses while (iec_get(IO_CLK) != toggle) {}, so
+        // if toggle is true, it waits until the clock line is high.
+        // If toggle is false, it waits until the clock line is low.
+        // wait_timeout_block() mask argument is 0 for waiting until the
+        // line goes high (inactive), and the pin mask to wait until it goes
+        // low (active).
+        let mask = match toggle {
+            true => 0,
+            false => IO_CLK,
+        };
+        if !self.wait_timeout_block(IO_CLK, mask, NIB_SRQ_CLK_WRITE_IMEOUT) {
+            return Err(DriverError::Timeout);
+        }
+
+        self.write_nib_srq_byte(byte);
+
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn write_nib_srq_byte(&mut self, byte: u8) {
+        // Start with the most significant bit.
+        let mut mask = 0x80;
+        for _ in 0..8 {
+            // Set the DATA line to the current bit's value inverted - hence
+            // a bit of 0 becomes a high DATA line, and a bit of 1 becomes a
+            // low DATA line.  Set both DATA and SRQ lines at the same time.
+            if byte & mask == mask {
+                self.bus.set_lines(IO_DATA | IO_SRQ);
+            } else {
+                self.set_release(IO_SRQ, IO_DATA);
+            }
+
+            // TODO - placeholder, need real value.  ZoomFloppy used 300ns.
+            // We'll also need different values for Pico and Pico 2.
+            block_ns!(500);
+
+            // Release SRQ line
+            self.bus.release_srq();
+
+            // TODO - placeholder, need real value.  ZoomFloppy used 935ns.
+            // We'll also need different values for Pico and Pico 2.
+            block_ns!(1500);
+
+            // Shift mask rightwards
+            mask >>= 1;
+        }
+    }
+
+    fn write_nib_parburst(&mut self, byte: u8) {
+        self.set_release(IO_ATN, IO_DATA | IO_CLK);
+
+        block_us!(5);
+
+        while self.bus.get_data() {}
+
+        self.write_pp_byte(byte);
+
+        block_us!(1);
+
+        self.bus.release_atn();
+
+        block_us!(10);
+
+        while !self.bus.get_data() {}
+
+        let _ = self.read_pp_byte();
+    }
+
+    fn write_nib_check(&mut self, byte: u8) -> bool {
+        const MNIB_CMD: [u8; 4] = [0x00, 0x55, 0xaa, 0xff];
+
+        // If in suppression mode, save the data
+        if self.get_suppress_nib_command() {
+            if self.current_nib_write < self.saved_nib_bytes.len() {
+                self.saved_nib_bytes[self.current_nib_write] = byte;
+                self.current_nib_write += 1;
+            }
+            return false;
+        }
+
+        // State machine to match 00,55,aa,ff,XX where XX is read/write track.
+        if self.cmd_idx == MNIB_CMD.len() {
+            if byte == 0x03
+                || byte == 0x04
+                || byte == 0x05
+                || byte == 0x0b
+                || byte == 0x13
+                || byte == 0x14
+                || byte == 0x16
+            {
+                self.set_suppress_nib_command(true);
+            }
+            self.cmd_idx = 0;
+        } else if MNIB_CMD[self.cmd_idx] == byte {
+            self.cmd_idx += 1;
+        } else {
+            self.cmd_idx = 0;
+            if MNIB_CMD[0] == byte {
+                self.cmd_idx += 1;
+            }
+        }
+
+        true
+    }
+
+    fn write_nib_srqburst(&mut self, byte: u8) {
+        self.set_release(IO_ATN, IO_SRQ | IO_CLK | IO_DATA);
+
+        block_us!(5);
+
+        while !self.bus.get_clock() {}
+
+        self.write_nib_srq_byte(byte);
+
+        block_us!(1);
+
+        self.bus.release_atn();
+
+        while self.bus.get_clock() {}
     }
 }

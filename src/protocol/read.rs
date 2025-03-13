@@ -233,6 +233,14 @@ impl IecDriver {
                     Ok(1)
                 }
             }
+            ProtocolType::NibCommand => {
+                buf[0] = if !self.get_suppress_nib_command() {
+                    self.read_nib_parburst()
+                } else {
+                    0x88
+                };
+                Ok(1)
+            }
             ProtocolType::NibSrq => {
                 buf[0] = self.read_nib_srq_byte();
                 if count == (len as usize - 2) {
@@ -242,8 +250,13 @@ impl IecDriver {
                 }
                 Ok(1)
             }
-
-            _ => unreachable!("Read: Unsupported protocol type"),
+            ProtocolType::NibSrqCommand => {
+                buf[0] = self.read_nib_srqburst_checked();
+                Ok(1)
+            }
+            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+                unreachable!("Read: Unsupported protocol type")
+            }
         };
 
         // Handle early_exit signal
@@ -341,8 +354,12 @@ impl IecDriver {
             ProtocolType::PP => PP_READ_ITER_BYTES,
             ProtocolType::P2 => DEFAULT_READ_ITER_BYTES,
             ProtocolType::Nib => DEFAULT_READ_ITER_BYTES,
+            ProtocolType::NibCommand => DEFAULT_READ_ITER_BYTES,
             ProtocolType::NibSrq => DEFAULT_READ_ITER_BYTES,
-            _ => unreachable!("Read: Unsupported protocol type"),
+            ProtocolType::NibSrqCommand => DEFAULT_READ_ITER_BYTES,
+            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+                unreachable!("Read: Unsupported protocol type")
+            }
         }
     }
 
@@ -370,14 +387,21 @@ impl IecDriver {
             ProtocolType::PP => {}
             ProtocolType::P2 => {}
             ProtocolType::Nib => {
+                // Set suppress_nib_command to false
+                self.set_suppress_nib_command(false);
+
                 // Wait for drive to be ready to send - 5ms is too short.
                 // We yield here, because this is a long time.
                 yield_ms!(10);
 
                 // Read the first, dummy, byte and discard it
-                let _ = self.read_nib_parburst().await;
+                let _ = self.read_nib_parburst();
             }
+            ProtocolType::NibCommand => {}
             ProtocolType::NibSrq => {
+                // Set suppress_nib_command to false
+                self.set_suppress_nib_command(false);
+
                 // Release all lines
                 self.bus.release_lines(IO_SRQ | IO_CLK | IO_DATA | IO_ATN);
 
@@ -386,12 +410,15 @@ impl IecDriver {
                 yield_ms!(10);
 
                 // Read the first, dummy, byte and discard it
-                let _ = self.read_nib_srqburst().await;
+                let _ = self.read_nib_srqburst();
 
                 // Pulling CLK low signals the drive to start sending
                 self.bus.set_clock();
             }
-            _ => unreachable!("Read: Unsupported protocol type"),
+            ProtocolType::NibSrqCommand => {}
+            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+                unreachable!("Read: Unsupported protocol type")
+            }
         }
     }
 
@@ -404,11 +431,15 @@ impl IecDriver {
             ProtocolType::PP => {}
             ProtocolType::P2 => {}
             ProtocolType::Nib => {}
+            ProtocolType::NibCommand => {}
             ProtocolType::NibSrq => {
                 // Release all lines
                 self.bus.release_lines(IO_SRQ | IO_CLK | IO_DATA | IO_ATN);
             }
-            _ => unreachable!("Read: Unsupported protocol type"),
+            ProtocolType::NibSrqCommand => {}
+            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+                unreachable!("Read: Unsupported protocol type")
+            }
         }
     }
 
@@ -639,9 +670,9 @@ impl IecDriver {
         Ok(2)
     }
 
-    async fn read_nib_parburst(&mut self) -> u8 {
+    pub fn read_nib_parburst(&mut self) -> u8 {
         // Set ATN and wait for drive to release DATA
-        self.set_release(IO_ATN, IO_DATA | IO_CLK).await;
+        self.set_release(IO_ATN, IO_DATA | IO_CLK);
         block_us!(5);
         while self.bus.get_data() {}
 
@@ -668,9 +699,9 @@ impl IecDriver {
         self.read_pp_byte()
     }
 
-    async fn read_nib_srqburst(&mut self) -> u8 {
+    pub fn read_nib_srqburst(&mut self) -> u8 {
         // Set ATN, and wait for drive to start SRQ transfer
-        self.set_release(IO_ATN, IO_SRQ | IO_CLK | IO_DATA).await;
+        self.set_release(IO_ATN, IO_SRQ | IO_CLK | IO_DATA);
         block_us!(1);
 
         // Read 8 bits via fast serial
@@ -701,5 +732,13 @@ impl IecDriver {
         }
 
         byte
+    }
+
+    fn read_nib_srqburst_checked(&mut self) -> u8 {
+        if !self.get_suppress_nib_command() {
+            self.read_nib_srqburst()
+        } else {
+            0x88
+        }
     }
 }
