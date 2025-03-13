@@ -48,16 +48,29 @@ const_assert!(READ_BUF_SIZE >= DEFAULT_READ_ITER_BYTES);
 const_assert!(READ_BUF_SIZE >= PP_READ_ITER_BYTES);
 
 impl IecDriver {
-    // Handles reads for non-standard CBM protocols.
-    //
-    // Implements the following steps:
-    // - Makes sure there's space to write bytes via USB
-    // - Gets the number of bytes each iteration will read
-    // - Gets any options for this operation
-    // - Runs the main read loop, sending data via USB to the host.
-    // - Calls the protocol specific startup routine to prep for reading
-    // - Terminates the read routine
-    // - Returns the number of bytes read
+    /// Handles reads for non-standard CBM protocols.
+    ///
+    /// As well as the standard CBM IEC read protocol, this also supports:
+    /// - S1 Faster serial protocol developed for use with 1541 type drives.
+    /// - S2 Stock Commodore faster serial than S1, used by 1570, 1571 and
+    ///   1581.
+    /// - PP Parallel protocol, offers improve rates above serial, and
+    ///   requires a parallel port to be installed.
+    /// - P2 Parallel protocol 2, faster parallel protocol, again requiring a
+    ///   parallel port.
+    ///
+    /// These are all supported by uploading custom firmware routines to the
+    /// drive.  That is outside the scope of the pico1541 - it is performed
+    /// by the host software, such as OpenCBM, using the pico1541 as a data
+    /// transmission vehicle.
+    ///
+    /// Implements the following steps:
+    /// - Makes sure there's space to write bytes via USB
+    /// - Gets any options for this operation
+    /// - Calls the protocol specific startup routine to prep for reading
+    /// - Runs the main read loop, sending data via USB to the host.
+    /// - Terminates the read routine
+    /// - Returns the number of bytes read, or error.
     pub async fn read(
         &mut self,
         len: u16,
