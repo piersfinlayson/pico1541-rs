@@ -12,6 +12,7 @@ mod ieee;
 mod read;
 mod tape;
 pub(crate) mod types;
+mod write;
 
 use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, Ordering};

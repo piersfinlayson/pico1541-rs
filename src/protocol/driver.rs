@@ -13,6 +13,8 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::Duration;
 
+use crate::constants::DRIVE_OPERATION_WATCHDOG_TIMER;
+use crate::infra::watchdog::{deregister_task, register_task, TaskId};
 use crate::protocol::iec::IecDriver;
 use crate::protocol::ieee::IeeeDriver;
 use crate::protocol::tape::TapeDriver;
@@ -306,6 +308,10 @@ impl Driver {
 pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFlags) {
     trace!("Driver write task started");
 
+    // Register this task with the watchdog
+    register_task(TaskId::DriveOperation, DRIVE_OPERATION_WATCHDOG_TIMER);
+
+    // Lock the driver and spawn the task
     let response = {
         abort();
         let mut guard = DRIVER.lock().await;
@@ -345,6 +351,9 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
         clear_abort();
     }
 
+    // Deregister this task with the watchdog
+    deregister_task(TaskId::DriveOperation);
+
     trace!("Driver write task exiting");
 }
 
@@ -360,6 +369,10 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
 pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
     trace!("Driver read task started");
 
+    // Register this task with the watchdog
+    register_task(TaskId::DriveOperation, DRIVE_OPERATION_WATCHDOG_TIMER);
+
+    // Lock the driver and spawn the task
     let response = {
         abort();
         let mut guard = DRIVER.lock().await;
@@ -399,6 +412,9 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
         warn!("Driver read task was aborted");
         clear_abort();
     }
+
+    // Deregister this task with the watchdog
+    deregister_task(TaskId::DriveOperation);
 
     trace!("Driver read task exiting");
 }

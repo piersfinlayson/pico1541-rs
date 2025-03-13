@@ -33,6 +33,10 @@ pub const STATUS_DISPLAY_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 /// How often the WiFi Control task must feed the watchdog to prevent a reset.
 pub const WIFI_CONTROL_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 
+/// How often a drive (read/write) operation must feed the watchdog to prevent
+/// a reset
+pub const DRIVE_OPERATION_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
+
 //
 // Task main runner and related timers.
 //

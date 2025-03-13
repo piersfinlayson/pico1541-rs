@@ -150,9 +150,13 @@ pub mod iec {
     /// to enter TALK.
     pub const WRITE_TALK_CLK_TIMEOUT: Duration = Duration::from_secs(1);
 
-    /// Timeto wait for CLK to be released at the beginning on the main CBM
+    /// Time to wait for CLK to be released at the beginning on the main CBM
     /// protocol read loop, before reading a byte.
-    pub const READ_CLK_TIMEOUT: Duration = Duration::from_secs(1);
+    pub const READ_CLK_START_TIMEOUT: Duration = Duration::from_secs(1);
+
+    /// Time to wait for drive to pull CLK low after releasing DATA when
+    /// reading a byte
+    pub const READ_CLK_TIMEOUT: Duration = Duration::from_micros(400);
 
     /// A "forever" timeout.  We can't use Duration::MAX, as that's a u64, and
     /// causes the underlying embassy_time methods to panic.  So we set it to a

@@ -1,4 +1,5 @@
-//! This file implements the reading bytes using non-standard CBM.
+//! This file implements the reading of bytes from the drive, for all
+//! supported protocols.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -6,7 +7,6 @@
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_time::Duration;
 use static_assertions::const_assert;
 
 use super::driver::{DriverError, ProtocolDriver};
@@ -15,11 +15,11 @@ use super::ProtocolType;
 
 use crate::constants::MAX_EP_PACKET_SIZE_USIZE;
 use crate::usb::transfer::UsbDataTransfer;
-use crate::util::time::iec::READ_CLK_TIMEOUT;
+use crate::util::time::iec::{READ_CLK_START_TIMEOUT, READ_CLK_TIMEOUT};
 use crate::util::time::{block_ns, block_us, iec_delay, yield_ms};
 
-/// The non standard CBM protocol may support specific options.  This is used
-/// to define and control those options.
+/// Some protocols may support specific options.  This is used to define and
+/// control those options.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ReadOption {
     // No specific option
@@ -48,7 +48,7 @@ const_assert!(READ_BUF_SIZE >= DEFAULT_READ_ITER_BYTES);
 const_assert!(READ_BUF_SIZE >= PP_READ_ITER_BYTES);
 
 impl IecDriver {
-    /// Handles reads for non-standard CBM protocols.
+    /// Main read routine which handles all protocols.
     ///
     /// As well as the standard CBM IEC read protocol, this also supports:
     /// - S1 Faster serial protocol developed for use with 1541 type drives.
@@ -71,6 +71,16 @@ impl IecDriver {
     /// - Runs the main read loop, sending data via USB to the host.
     /// - Terminates the read routine
     /// - Returns the number of bytes read, or error.
+    ///
+    /// Returns
+    /// - Ok(u16) - Number of bytes read
+    /// - Err(DriverError, usize) - Error and number of bytes read and sent
+    ///   via USB, before the error occurred.
+    ///
+    /// Note that EarlyExit and Eoi are not considered errors - they are
+    /// converted before this function returns to Ok(u16).  The fact that
+    /// fewer bytes than requested were returned demonstrates to the host that
+    /// the read was terminated early.
     pub async fn read(
         &mut self,
         len: u16,
@@ -81,6 +91,7 @@ impl IecDriver {
         // of space, but we'll wait for enough space for an entire USB packet
         // as the buffer should be twice that size.
         UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
+        Self::feed_watchdog();
 
         // Get any options for this operation.
         let option = Self::get_read_option(len, protocol);
@@ -88,11 +99,15 @@ impl IecDriver {
         // Do protocol specific startup routine
         self.startup_read(protocol, option).await;
 
+        // Call the main read loop
         let loop_result = self.read_main_loop(len, protocol, option).await;
 
         // Protocol specific termination - we terminate whether we hit an error
         // or not.
         self.terminate_read(protocol, option);
+
+        // Feed the watchdog, as belt and braces in case it's been a while.
+        Self::feed_watchdog();
 
         loop_result
     }
@@ -112,9 +127,9 @@ impl IecDriver {
         option: ReadOption,
     ) -> Result<u16, (DriverError, u16)> {
         // Get number of bytes each read loop iteration below.
-        let num_bytes = Self::get_read_non_cbm_num_iter_bytes(protocol);
+        let num_bytes = Self::get_read_num_iter_bytes(protocol);
 
-        // Tracking variables for read and send operations
+        // Tracking variables for read and USB send operations
         const SIZE: usize = MAX_EP_PACKET_SIZE_USIZE; // Size of the buffer
         let mut count = 0; // Number of bytes read so far
         let mut usb_buf = [0u8; SIZE]; // Buffer for data to be sent
@@ -170,10 +185,9 @@ impl IecDriver {
         // Now return either the number of bytes successfully read (which means
         // the number actually sent via USB to the host), or the error and the
         // number of bytes actuallt sent.
-        match result {
-            Ok(()) => Ok(usb_sent as u16),
-            Err(e) => Err((e, usb_sent as u16)),
-        }
+        result
+            .map(|_| usb_sent as u16)
+            .map_err(|e| (e, usb_sent as u16))
     }
 
     /// Read the next chunk of data
@@ -188,7 +202,7 @@ impl IecDriver {
     /// * `len` - Maximum number of bytes to read
     /// * `num_bytes` - Expected number of bytes to read in this iteration
     /// * `usb_sent` - Current count of bytes sent to USB host
-    /// * `read_buf` - Buffer to store the read bytes
+    /// * `buf` - Buffer to store the read bytes
     ///
     /// # Returns
     /// * `Ok((bool, usize))` - (early_exit flag, number of bytes read)
@@ -200,10 +214,37 @@ impl IecDriver {
         count: usize,
         len: u16,
         num_bytes: usize,
-        read_buf: &mut [u8; READ_BUF_SIZE],
+        buf: &mut [u8],
     ) -> Result<(bool, usize), DriverError> {
+        assert!(!buf.is_empty());
+
         // Read the byte(s)
-        let result = self.read_iter(protocol, option, count, len, read_buf).await;
+        let result = match protocol {
+            ProtocolType::Cbm => self.read_cbm(buf).await,
+            ProtocolType::S1 => self.read_s1(buf).await,
+            ProtocolType::S2 => self.read_s2(buf).await,
+            ProtocolType::PP => self.read_pp(buf).await,
+            ProtocolType::P2 => self.read_p2(buf).await,
+            ProtocolType::Nib => {
+                buf[0] = self.read_nib_handshaked(count & 1 == 1);
+                if option == ReadOption::NibParReadEarlyExit && buf[0] == NIB_EARLY_EXIT_BYTE {
+                    Err(DriverError::EarlyExit)
+                } else {
+                    Ok(1)
+                }
+            }
+            ProtocolType::NibSrq => {
+                buf[0] = self.read_nib_srq_byte();
+                if count == (len as usize - 2) {
+                    // We indicate to the drive to stop by releasing CLK
+                    // before the last byte is read.
+                    self.bus.release_clock();
+                }
+                Ok(1)
+            }
+
+            _ => unreachable!("Read: Unsupported protocol type"),
+        };
 
         // Handle early_exit signal
         match result {
@@ -292,15 +333,16 @@ impl IecDriver {
 
     // Gets the number of bytes read in each iteration through the main read
     // loop.
-    fn get_read_non_cbm_num_iter_bytes(protocol: ProtocolType) -> usize {
+    fn get_read_num_iter_bytes(protocol: ProtocolType) -> usize {
         match protocol {
+            ProtocolType::Cbm => DEFAULT_READ_ITER_BYTES,
             ProtocolType::S1 => DEFAULT_READ_ITER_BYTES,
             ProtocolType::S2 => DEFAULT_READ_ITER_BYTES,
             ProtocolType::PP => PP_READ_ITER_BYTES,
             ProtocolType::P2 => DEFAULT_READ_ITER_BYTES,
             ProtocolType::Nib => DEFAULT_READ_ITER_BYTES,
             ProtocolType::NibSrq => DEFAULT_READ_ITER_BYTES,
-            _ => unreachable!("Non-CBM read: Unsupported protocol type"),
+            _ => unreachable!("Read: Unsupported protocol type"),
         }
     }
 
@@ -349,48 +391,7 @@ impl IecDriver {
                 // Pulling CLK low signals the drive to start sending
                 self.bus.set_clock();
             }
-            _ => unreachable!("Non-CBM read: Unsupported protocol type"),
-        }
-    }
-
-    /// Performs the main byte (or multiple bytes) read for the protocol.
-    #[inline(always)]
-    pub async fn read_iter(
-        &mut self,
-        protocol: ProtocolType,
-        option: ReadOption,
-        count: usize,
-        len: u16,
-        buf: &mut [u8],
-    ) -> Result<usize, DriverError> {
-        assert!(!buf.is_empty());
-
-        // Read the byte(s)
-        match protocol {
-            ProtocolType::Cbm => self.read_cbm(buf).await,
-            ProtocolType::S1 => self.read_s1(buf).await,
-            ProtocolType::S2 => self.read_s2(buf).await,
-            ProtocolType::PP => self.read_pp(buf).await,
-            ProtocolType::P2 => self.read_p2(buf).await,
-            ProtocolType::Nib => {
-                buf[0] = self.read_nib_handshaked(count & 1 == 1);
-                if option == ReadOption::NibParReadEarlyExit && buf[0] == NIB_EARLY_EXIT_BYTE {
-                    Err(DriverError::EarlyExit)
-                } else {
-                    Ok(1)
-                }
-            }
-            ProtocolType::NibSrq => {
-                buf[0] = self.read_nib_srq_byte();
-                if count == (len as usize - 2) {
-                    // We indicate to the drive to stop by releasing CLK
-                    // before the last byte is read.
-                    self.bus.release_clock();
-                }
-                Ok(1)
-            }
-
-            _ => unreachable!("Non-CBM read: Unsupported protocol type"),
+            _ => unreachable!("Read: Unsupported protocol type"),
         }
     }
 
@@ -407,7 +408,7 @@ impl IecDriver {
                 // Release all lines
                 self.bus.release_lines(IO_SRQ | IO_CLK | IO_DATA | IO_ATN);
             }
-            _ => unreachable!("Non-CBM read: Unsupported protocol type"),
+            _ => unreachable!("Read: Unsupported protocol type"),
         }
     }
 
@@ -415,7 +416,7 @@ impl IecDriver {
     async fn read_cbm(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
         // Wait for clock to be released, with 1s timeout.  Timing isn't
         // particularly critical here, so we can yield.
-        self.wait_timeout_yield(IO_CLK, 0, READ_CLK_TIMEOUT, true)
+        self.wait_timeout_yield(IO_CLK, 0, READ_CLK_START_TIMEOUT, true, false)
             .await?;
 
         // Break if we've already seen EOI
@@ -428,7 +429,7 @@ impl IecDriver {
         self.bus.release_data();
 
         // Wait up to 400us for CLK to be pulled low by the drive
-        let clock = self.wait_timeout_block(IO_CLK, IO_CLK, Duration::from_micros(400));
+        let clock = self.wait_timeout_block(IO_CLK, IO_CLK, READ_CLK_TIMEOUT);
 
         // Check for EOI signalling from talker
         if !clock {
@@ -440,7 +441,7 @@ impl IecDriver {
         }
 
         // Read the byte
-        match self.receive_byte().await {
+        match self.iec_receive_byte().await {
             Ok(byte) => {
                 // Acknowledge byte received by pulling DATA
                 self.bus.set_data();
@@ -461,7 +462,7 @@ impl IecDriver {
     }
 
     /// Receive a single byte from the IEC bus
-    async fn receive_byte(&mut self) -> Result<u8, DriverError> {
+    async fn iec_receive_byte(&mut self) -> Result<u8, DriverError> {
         // Wait for CLK to be asserted (pulled low)
         if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
             debug!("Receive byte: no clock");

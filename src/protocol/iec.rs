@@ -19,10 +19,9 @@ use crate::constants::{
 use crate::infra::watchdog::{feed_watchdog, TaskId};
 use crate::usb::transfer::UsbDataTransfer;
 use crate::util::time::iec::{
-    BUS_FREE_CHECK_YIELD, BUS_FREE_TIMEOUT, FOREVER_TIMEOUT, IEC_T_BB, IEC_T_NE, IEC_T_R, IEC_T_S,
-    IEC_T_V, LISTENER_WAIT_INTERVAL, WRITE_TALK_CLK_TIMEOUT,
+    BUS_FREE_CHECK_YIELD, BUS_FREE_TIMEOUT, FOREVER_TIMEOUT, LISTENER_WAIT_INTERVAL,
 };
-use crate::util::time::{block_ns, block_us, iec_delay, yield_for, yield_ms, yield_us};
+use crate::util::time::{block_us, yield_for, yield_ms, yield_us};
 
 // IEC protocol bit masks - these are used by external applications
 pub const IEC_DATA: u8 = 0x01;
@@ -388,17 +387,6 @@ impl ProtocolDriver for IecDriver {
     }
 
     /// Send data to the drive
-    ///
-    /// Timing is critical in this function, so we use block_us.
-    ///
-    /// When the read has finished it is important that the last USB packet
-    /// was either not the maximum size allowed, or, if it was, it is followed
-    /// by a zero length packet (ZLP).  This informs the host (via its USB
-    /// stack), that the bulk transfer has completed.  In our implementation,
-    /// this is handled by ProtocolHandler when it received the data we sent
-    /// it, using USB_DATA_TRANSFER, once we're done.  And done is signalled
-    /// by the task function that calls this one, so again, we don't need to
-    /// worry about it.
     async fn raw_write(
         &mut self,
         len: u16,
@@ -412,36 +400,9 @@ impl ProtocolDriver for IecDriver {
             len
         );
 
-        let result = match protocol {
-            // Standard Commodore IEC write
-            ProtocolType::Cbm => self.cbm_write(len, protocol, flags).await,
-
-            // Non-standard protocol write:
-            // - S1 Faster serial protocol developed for use with 1541 type
-            //   drives.
-            // - S2 Stock Commodore faster serial than S1, used by 1570, 1571
-            //   and 1581.
-            // - PP Parallel protocol, offers improve rates above serial, and
-            //   requires parallel pot mod.
-            // - P2 Parallel protocol 2, faster parallel protocol.
-            //
-            // These are all supported by uploading custom firmware routines
-            // to the drive.  That is outside the scope of the pico1541 - it
-            // is performed by the host software, such as OpenCBM, using the
-            // pico1541 as a data transmission vehicle.
-            ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => {
-                self.non_cbm_write(len, protocol, flags).await
-            }
-
-            // TODO NibCommand, NibSrq, NibSrqCommand, Tap and TapConfig
-            _ => {
-                error!("Raw write: Unsupported protocol type");
-                Err((DriverError::Unsupported, 0))
-            }
-        };
-
-        trace!("Raw write completed with result {:?}", result);
-        result
+        // Call the main read() function, which handles all supported
+        // protocols.
+        self.write(len, protocol, flags).await
     }
 
     // As this is wait forever, timing with the loop isn't critical, so we use
@@ -456,7 +417,7 @@ impl ProtocolDriver for IecDriver {
         let hw_state = if state != 0 { hw_mask } else { 0 };
 
         let timeout = timeout.unwrap_or(FOREVER_TIMEOUT);
-        self.wait_timeout_yield(hw_mask, hw_state, timeout, true)
+        self.wait_timeout_yield(hw_mask, hw_state, timeout, true, true)
             .await
     }
 
@@ -525,394 +486,6 @@ impl ProtocolDriver for IecDriver {
     }
 }
 
-// Implementations of write for the various supported protocols
-impl IecDriver {
-    /// Implements standard Commodore IEC write support
-    async fn cbm_write(
-        &mut self,
-        len: u16,
-        protocol: ProtocolType,
-        flags: ProtocolFlags,
-    ) -> Result<u16, (DriverError, u16)> {
-        assert!(protocol == ProtocolType::Cbm);
-
-        let atn = flags.is_atn();
-        let talk = flags.is_talk();
-
-        trace!("CBM Write: {} bytes, ATN: {}, ATN: {}", len, atn, talk);
-
-        if len == 0 {
-            return Ok(len);
-        }
-
-        // Wait until there's some bytes to send before we start so we don't
-        // have to pause in the middle of a transfer.
-        UsbDataTransfer::lock_wait_outstanding().await;
-        Self::feed_watchdog();
-
-        // Check if any device is present on the bus.  If both lines stay low
-        // then this check fails - and corresponds to a device present but
-        // powered off.  If we stayed, we'd get stuck in wait_for_listener().
-        if !self.wait_timeout_2ms(IO_ATN | IO_RESET, 0) {
-            debug!("Raw Write: No devices present on the bus");
-            debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins());
-            // TO DO - async read handling
-            return Err((DriverError::NoDevices, 0));
-        }
-
-        // Let data go high.
-        self.bus.release_data();
-
-        // Either pull CLOCK low, or both ATN and CLOCK.
-        match atn {
-            true => self.bus.set_lines(IO_CLK | IO_ATN),
-            false => self.bus.set_lines(IO_CLK),
-        }
-
-        // Short delay to let lines settle
-        iec_delay!();
-
-        // Wait for any device to pull data after we set CLK.
-        // This should be IEC_T_AT (1ms) but allow a bit longer.
-        if !self.wait_timeout_2ms(IO_DATA, IO_DATA) {
-            debug!("Raw Write: No devices detected");
-            debug!("Poll pins returns 0x{:02x}", self.bus.poll_pins() & IO_DATA);
-            self.bus.release_lines(IO_CLK | IO_ATN);
-            return Err((DriverError::NoDevices, 0));
-        }
-
-        // Wait for drive to be ready for us to release CLK.  The tranfer
-        // starts to be unreliable below 10 us.
-        block_us!(IEC_T_NE);
-
-        // Send bytes as soon as the device is ready
-        let mut count = 0;
-        let result = loop {
-            // Need to signal EOI for the last byte
-            let is_last_byte = count == len - 1;
-
-            // Get the next byte to send
-            debug!("Lock get next byte");
-            let byte = UsbDataTransfer::lock_get_next_byte().await;
-            debug!("Lock get next byte done");
-
-            // Be sure DATA line has been pulled by device
-            if !self.bus.get_data() {
-                debug!("Raw write: Device not present");
-                break Err(DriverError::NoDevice);
-            }
-
-            debug!("Data line low");
-
-            // Release CLK and wait for listener to release data
-            if !self.wait_for_listener().await {
-                debug!("Raw write: No listener");
-                break Err(DriverError::Timeout);
-            }
-
-            debug!("Listener released DATA");
-
-            // Signal EOI for last byte
-            if is_last_byte && !atn {
-                self.wait_timeout_2ms(IO_DATA, IO_DATA);
-                self.wait_timeout_2ms(IO_DATA, 0);
-            }
-
-            // Pull CLOCK low
-            self.bus.set_lines(IO_CLK);
-
-            // Send the byte
-            if self.send_byte(byte).await {
-                count += 1;
-                block_us!(IEC_T_BB);
-            } else {
-                debug!("Raw write: io err");
-                // TODO - async read handling
-                break Err(DriverError::Io);
-            }
-
-            trace!("Written byte #{} to drive", count);
-
-            Self::feed_watchdog();
-
-            // Break if we've sent all the bytes
-            if count >= len {
-                break Ok(());
-            }
-        };
-
-        debug!("Finished writing data: {}", result);
-
-        match result {
-            Ok(_) => {
-                // Talk-ATN turn around if requested
-                if talk {
-                    debug!("Put drive into Talk mode");
-
-                    // Hold DATA and release ATN
-                    self.set_release(IO_DATA, IO_ATN).await;
-                    // IEC_T_TK was defined to be -1 in the original C code
-                    // which presumably meant to make the delay sub
-                    // micro-second.
-                    block_ns!(500);
-
-                    // Release CLK and wait for device to grab it
-                    self.bus.release_clock();
-                    iec_delay!();
-
-                    // Wait for device to pull CLOCK low before returning.  As
-                    // self.wait() is an external API, it takes IEC_* lines
-                    // not IO_lines*
-                    self.wait(IEC_CLOCK, 1, Some(WRITE_TALK_CLK_TIMEOUT))
-                        .await
-                        .map(|_| count)
-                        .map_err(|e| (e, count))
-                } else {
-                    self.bus.release_atn();
-                    Ok(count)
-                }
-            }
-            Err(e) => {
-                block_us!(IEC_T_R);
-                self.bus.iec_release(IO_CLK | IO_ATN);
-                Err((e, count))
-            }
-        }
-    }
-
-    async fn non_cbm_write(
-        &mut self,
-        len: u16,
-        protocol: ProtocolType,
-        _flags: ProtocolFlags,
-    ) -> Result<u16, (DriverError, u16)> {
-        // Wait until there's some bytes to send before we start so we don't
-        // have to pause in the middle of a transfer.
-        UsbDataTransfer::lock_wait_outstanding().await;
-        Self::feed_watchdog();
-
-        let num_bytes = match protocol {
-            ProtocolType::S1 | ProtocolType::S2 | ProtocolType::P2 => 1,
-            ProtocolType::PP => 2,
-            _ => unreachable!("Non-CBM write: Unsupported protocol type"),
-        };
-
-        let mut count = 0;
-
-        while count < len as usize {
-            // Get the byte(s) to write
-            let mut buf = [0u8; 2];
-            for item in buf.iter_mut().take(num_bytes) {
-                *item = UsbDataTransfer::lock_get_next_byte().await;
-            }
-
-            // Call the appropriate write function
-
-            let result = match protocol {
-                ProtocolType::S1 => self.write_s1(buf[0]).await,
-                ProtocolType::S2 => self.write_s2(buf[0]).await,
-                ProtocolType::PP => self.write_pp(buf[0], buf[1]).await,
-                ProtocolType::P2 => self.write_p2(buf[0]).await,
-                _ => unreachable!("Non-CBM write: Unsupported protocol type"),
-            };
-
-            match result {
-                Ok(size) => count += size,
-                Err(e) => {
-                    return Err((e, count as u16));
-                }
-            }
-        }
-
-        Ok(count as u16)
-    }
-
-    // To write a byte using S1:
-    // - Send the byte bit by bit, starting from the MSB
-    // - For each bit, set DATA to represent the bit (1 is pulled low, 0 high)
-    // - Wait for DATA line to stabilize
-    // - Release CLK
-    // - Wait for it to settle
-    // - Wait for CLK to be pulled low
-    // - Send the bit a second time, using DATA in the opposite direction
-    // - Wait for drive to release CLK
-    // - Set CLK and release DATA
-    // - Pause briefly to allow lines to settle
-    // - Wait for device to release DATA
-    // - Move to the next most significant bit
-    async fn write_s1(&mut self, byte: u8) -> Result<usize, DriverError> {
-        let mut byte = byte;
-
-        // Process the byte bit by bit, starting from MSB
-        for _ in 0..8 {
-            // Set DATA to represent the bit - 1 is pulled low, 0 is high.
-            if byte & 0x80 == 0 {
-                self.bus.release_data();
-            } else {
-                self.bus.set_data();
-            }
-
-            // Wait for DATA line to stabilize
-            iec_delay!();
-
-            // Release CLK
-            self.bus.release_clock();
-
-            // Wait for it to settle
-            iec_delay!();
-
-            // Wait CLK to be pulled low
-            self.loop_and_yield_while(|| !self.bus.get_clock()).await?;
-
-            // Send bit a second time - using DATA in the opposite direction
-            if (byte & 0x80) == 0 {
-                self.bus.set_data();
-            } else {
-                self.bus.release_data();
-            }
-
-            // Wait for drive to release CLK
-            self.loop_and_yield_while(|| self.bus.get_clock()).await?;
-
-            // Set CLK and release DATA
-            self.set_release(IO_CLK, IO_DATA).await;
-
-            // Pause briefly to allow lines to settle
-            iec_delay!();
-
-            // Wait for device to acknowledge by setting DATA high
-            self.loop_and_yield_while(|| !self.bus.get_data()).await?;
-
-            // Shift to next most significant bit
-            byte <<= 1;
-        }
-
-        Ok(1)
-    }
-
-    // To write a byte using S2:
-    // - Send the byte 2 bits for each pass through the loop, starting from
-    //   the MSB
-    // - For the first bit of the pair, set DATA to represent the bit (1 is
-    //   pulled low, 0 high)
-    // - Wait for DATA line to stabilize
-    // - Release ATN
-    // - Wait for CLK to be released
-    // - Send the next bit, using DATA in the opposite direction
-    // - Wait for CLK to be set
-    // - Set ATN
-    // - Wait for CLK to be pulled low
-    async fn write_s2(&mut self, byte: u8) -> Result<usize, DriverError> {
-        let mut byte = byte;
-
-        // Process 4 iterations of 2 bits each
-        for _ in 0..4 {
-            // Send the first bit, with DATA low for 1, high for 0
-            if (byte & 1) == 0 {
-                self.bus.release_data();
-            } else {
-                self.bus.set_data();
-            }
-
-            // Delay briefly to allow line to settle
-            iec_delay!();
-
-            // Move to the next bit
-            byte >>= 1;
-
-            // Release ATN
-            self.bus.release_atn();
-
-            // Wait for CLK to be released
-            self.loop_and_yield_while(|| self.bus.get_clock()).await?;
-
-            // Send second bit, again with DATA low for 1 and high for 0
-            if (byte & 1) == 0 {
-                self.bus.release_data();
-            } else {
-                self.bus.set_data();
-            }
-
-            // Delay briefly to allow line to settle
-            iec_delay!();
-
-            // Move to next bit (which will be sent at the start of the loop)
-            byte >>= 1;
-
-            // Set ATN
-            self.bus.set_atn();
-
-            // Wait for CLK to be set
-            self.loop_and_yield_while(|| !self.bus.get_clock()).await?;
-        }
-
-        // Release DATA and pause for it to settle
-        self.bus.release_data();
-        iec_delay!();
-
-        Ok(1)
-    }
-
-    // To write a byte using P2:
-    // - Send the byte bit by bit, starting from the MSB
-    // - Set the parallel port pins for this byte
-    // - Pause for 0.5us
-    // - Release CLK
-    // - Wait for DATA to be released
-    // - Set CLK
-    // - Wait for DATA to be pulled low
-    async fn write_p2(&mut self, byte: u8) -> Result<usize, DriverError> {
-        self.write_pp_byte(byte);
-
-        block_ns!(500);
-
-        self.bus.release_clock();
-
-        // Wait for DATA to be released
-        self.loop_and_yield_while(|| self.bus.get_data()).await?;
-
-        self.bus.set_clock();
-
-        // Wait for DATA to be pulled low
-        self.loop_and_yield_while(|| !self.bus.get_data()).await?;
-
-        Ok(1)
-    }
-
-    // PP writes 2 bytes one after the other:
-    // - Wait for DATA to be pulled low
-    // - Set the parallel port pins for this first byte
-    // - Pause for 0.5us
-    // - Release CLK
-    // - Wait for DATA to be released
-    // - Write second byte using the parallel port pins
-    // - Pause for 0.5us
-    // - Set CLK
-    async fn write_pp(&mut self, byte_0: u8, byte_1: u8) -> Result<usize, DriverError> {
-        // Wait for DATA to be pulled low
-        self.loop_and_yield_while(|| !self.bus.get_data()).await?;
-
-        // Write first byte
-        self.write_pp_byte(byte_0);
-
-        block_ns!(500);
-
-        self.bus.release_clock();
-
-        // Wait for DATA to be released
-        self.loop_and_yield_while(|| self.bus.get_data()).await?;
-
-        // Write second byte
-        self.write_pp_byte(byte_1);
-
-        block_ns!(500);
-
-        self.bus.set_clock();
-
-        Ok(2)
-    }
-}
-
 // Various other functions
 impl IecDriver {
     pub fn new(bus: IecBus) -> Self {
@@ -921,7 +494,7 @@ impl IecDriver {
 
     #[inline(always)]
     pub fn feed_watchdog() {
-        feed_watchdog(TaskId::ProtocolHandler);
+        feed_watchdog(TaskId::DriveOperation);
     }
 
     /// Set the End of Indiciation (EOI) status
@@ -947,7 +520,7 @@ impl IecDriver {
     /// Wait for listener to release DATA line
     ///
     /// Timing is not critical here so use yield.
-    async fn wait_for_listener(&mut self) -> bool {
+    pub async fn wait_for_listener(&mut self) -> bool {
         // Release CLK to indicate we're ready to send
         self.bus.release_clock();
 
@@ -965,39 +538,6 @@ impl IecDriver {
         }
 
         true
-    }
-
-    /// Send a byte, one bit at a time via the IEC protocol
-    ///
-    /// Timing is critical here, so we use block_us.
-    async fn send_byte(&mut self, b: u8) -> bool {
-        let mut data = b;
-
-        for _ in 0..8 {
-            // Wait for setup time
-            block_us!(IEC_T_S + 55);
-
-            // Set the bit value on the DATA line
-            if (data & 1) == 0 {
-                self.bus.set_lines(IO_DATA);
-                iec_delay!();
-            }
-
-            // Trigger clock edge and hold valid for specified time
-            self.bus.release_clock();
-            block_us!(IEC_T_V);
-
-            // Prepare for next bit
-            self.set_release(IO_CLK, IO_DATA).await;
-            data >>= 1;
-        }
-
-        // Wait for acknowledgement
-        let ack = self.wait_timeout_2ms(IO_DATA, IO_DATA);
-        if !ack {
-            debug!("send_byte: no ack");
-        }
-        ack
     }
 
     /// Wait up to 2ms for lines to reach specified state.
@@ -1044,13 +584,22 @@ impl IecDriver {
         state: u8,
         timeout: Duration,
         feed: bool,
+        called_from_wait: bool,
     ) -> Result<(), DriverError> {
         let deadline = Instant::now() + timeout;
         loop {
             // Feed the watchdog first, just in case we don't go around this
             // loop again.
             if feed {
-                Self::feed_watchdog();
+                if called_from_wait {
+                    // We were called from wait(), which is called from the
+                    // ProtocolHandler context, so feed the watchdog
+                    // appropriately.
+                    feed_watchdog(TaskId::ProtocolHandler);
+                } else {
+                    // We were called from the DriveOperation context.
+                    Self::feed_watchdog();
+                }
             }
 
             // Next, check if we should abort

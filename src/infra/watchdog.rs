@@ -131,7 +131,7 @@ impl Watchdog {
 /// The tasks which are policed by the watchdog.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub enum TaskId {
-    /// The ProtcolHandler task,
+    /// The main ProtcolHandler task,
     ProtocolHandler = 0,
 
     /// The StatusDisplay
@@ -140,6 +140,9 @@ pub enum TaskId {
     /// The WiFi Control task.  The cyw43 WiFi task can't be policed by a
     /// watchdog, as the WiFI runner() doesn't return
     WiFiControl,
+
+    /// A spawned drive operation task (read or write)
+    DriveOperation,
 
     // We cannot police USB as it needs to run permanently.  The same goes
     // for the Bulk task - it calls the IN endpoint read().  Technically
@@ -260,7 +263,7 @@ pub fn reboot_dfu() -> ! {
     }
 }
 
-// Called to feed the watchdog
+/// helper function to feed the watchdog
 pub fn feed_watchdog(task_id: TaskId) {
     WATCHDOG.lock(|w| {
         w.borrow_mut()
@@ -270,12 +273,22 @@ pub fn feed_watchdog(task_id: TaskId) {
     });
 }
 
-// Helper function called to regiser tasks
+/// Helper function to register a task
 pub fn register_task(task_id: TaskId, max_duration: Duration) {
     WATCHDOG.lock(|w| {
         w.borrow_mut()
             .as_mut()
             .expect("Watchdog doesn't exist - can't register task")
             .register_task(Task::new(task_id, max_duration));
+    });
+}
+
+/// Helper function to deregister a task
+pub fn deregister_task(task_id: TaskId) {
+    WATCHDOG.lock(|w| {
+        w.borrow_mut()
+            .as_mut()
+            .expect("Watchdog doesn't exist - can't deregister task")
+            .deregister_task(task_id);
     });
 }
