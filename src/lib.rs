@@ -25,25 +25,13 @@ compile_error!("Either 'pico' or 'pico2' feature must be enabled");
 compile_error!("Features 'pico' and 'pico2' cannot be enabled simultaneously");
 
 // Declare all of this library's modules.
-mod built;
-mod bulk;
 mod constants;
-mod control;
-mod dev_info;
-mod display;
-mod driver;
 pub mod entry;
-mod gpio;
-mod iec;
-mod ieee;
+mod infra;
 mod protocol;
-mod tape;
 mod task;
-mod time;
-mod transfer;
-mod types;
 mod usb;
-mod watchdog;
+mod util;
 mod wifi;
 
 // Extra binary information that picotool can read.

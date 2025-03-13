@@ -75,7 +75,7 @@ pub(crate) use block_ns;
 /// Block for a specific number of microseconds.
 macro_rules! block_us {
     ($us:expr) => {
-        crate::time::block_for(Duration::from_micros($us))
+        crate::util::time::block_for(embassy_time::Duration::from_micros($us))
     };
 }
 pub(crate) use block_us;
@@ -83,7 +83,7 @@ pub(crate) use block_us;
 /// Block for a specific number of milliseconds.
 macro_rules! block_ms {
     ($ms:expr) => {
-        crate::time::block_for(Duration::from_millis($ms))
+        crate::util::time::block_for(embassy_time::Duration::from_millis($ms))
     };
 }
 pub(crate) use block_ms;

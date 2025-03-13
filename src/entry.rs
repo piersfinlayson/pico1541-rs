@@ -10,16 +10,15 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
 use embassy_time::Ticker;
 
-use crate::built::log_fw_info;
 use crate::constants::LOOP_LOG_INTERVAL;
-use crate::dev_info::get_serial;
-use crate::display::status_task;
-use crate::gpio::Gpio;
+use crate::infra::display::status_task;
+use crate::infra::gpio::Gpio;
+use crate::infra::watchdog::{watchdog_task, Watchdog};
 use crate::task::{core1_spawn, spawn_or_reboot_yield};
 use crate::usb::{usb_task, UsbStack};
-use crate::watchdog::{watchdog_task, Watchdog};
+use crate::util::built::log_fw_info;
+use crate::util::dev_info::get_serial;
 use crate::wifi::{spawn_wifi, WiFi};
-
 
 /// The main function.  This is the entry point for our application and like
 /// most embedded implementations, we do not want it to exit as that would

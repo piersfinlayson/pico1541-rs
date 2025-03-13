@@ -13,11 +13,11 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::Duration;
 
-use crate::iec::IecDriver;
-use crate::ieee::IeeeDriver;
+use crate::protocol::iec::IecDriver;
+use crate::protocol::ieee::IeeeDriver;
+use crate::protocol::tape::TapeDriver;
 use crate::protocol::{ProtocolFlags, ProtocolType};
-use crate::tape::TapeDriver;
-use crate::transfer::{UsbDataTransfer, UsbTransferResponse};
+use crate::usb::transfer::{UsbDataTransfer, UsbTransferResponse};
 
 //
 // Statics
@@ -33,18 +33,23 @@ pub static ABORT_DRIVER_TASK: AtomicBool = AtomicBool::new(false);
 #[allow(dead_code)]
 #[derive(defmt::Format, Debug)]
 pub enum DriverError {
+    // Errors which are signalled back to the host with a successful status
+    /// IoError
+    Io,
     /// Device timeout - no response within expected time
     Timeout,
-    /// The operation was aborted
-    Abort,
-    /// Bus was occupied
-    BusOccupied,
+    /// Early exit - on a Nib parallel read
+    EarlyExit,
     /// No devices detected
     NoDevices,
     /// No device detected
     NoDevice,
-    /// IoError
-    Io,
+
+    // Erors which are signalled back to the host as errors.
+    /// The operation was aborted
+    Abort,
+    /// Bus was occupied
+    BusOccupied,
     /// Unsupported protocol or operation
     Unsupported,
     /// Internal error
@@ -66,6 +71,7 @@ impl DriverError {
         match self {
             DriverError::Io
             | DriverError::Timeout
+            | DriverError::EarlyExit
             | DriverError::NoDevices
             | DriverError::NoDevice => UsbTransferResponse::Ok(count),
             _ => UsbTransferResponse::Error,

@@ -10,19 +10,20 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Flex, Pull};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 
+use super::driver::{DriverError, ProtocolDriver};
+use super::{Dio, ProtocolFlags, ProtocolType};
+
 use crate::constants::{
     MAX_EP_PACKET_SIZE_USIZE, PROTOCOL_YIELD_TIMER, PROTOCOL_YIELD_TIMER_MS,
     USB_DATA_TRANSFER_WAIT_TIMER,
 };
-use crate::driver::{DriverError, ProtocolDriver};
-use crate::protocol::{Dio, ProtocolFlags, ProtocolType};
-use crate::time::iec::{
+use crate::infra::watchdog::{feed_watchdog, TaskId};
+use crate::usb::transfer::UsbDataTransfer;
+use crate::util::time::iec::{
     BUS_FREE_CHECK_YIELD, BUS_FREE_TIMEOUT, FOREVER_TIMEOUT, IEC_T_BB, IEC_T_NE, IEC_T_R, IEC_T_S,
     IEC_T_V, LISTENER_WAIT_INTERVAL, READ_CLK_TIMEOUT, WRITE_TALK_CLK_TIMEOUT,
 };
-use crate::time::{block_ns, block_us, iec_delay, yield_for, yield_ms, yield_us};
-use crate::transfer::UsbDataTransfer;
-use crate::watchdog::{feed_watchdog, TaskId};
+use crate::util::time::{block_ns, block_us, iec_delay, yield_for, yield_ms, yield_us};
 
 // IEC protocol bit masks - these are used by external applications
 pub const IEC_DATA: u8 = 0x01;
@@ -140,7 +141,7 @@ pub struct IecBus {
     atn: Line,
     reset: Line,
     srq: Line,
-    dio: [Dio; 8],
+    pub dio: [Dio; 8],
 }
 
 impl IecBus {
@@ -346,7 +347,7 @@ impl IecBus {
 
 // The IEC protocol driver implementation
 pub struct IecDriver {
-    bus: IecBus,
+    pub bus: IecBus,
     eoi: bool,
 }
 
@@ -384,10 +385,22 @@ impl ProtocolDriver for IecDriver {
 
         // Check protocol type
         match protocol {
-            // Standard Commodore IEC read
+            // Standard CBM IEC read (1541, etc)
             ProtocolType::Cbm => self.cbm_read(len).await,
 
-            // Non Commodore IEC read
+            // Non-standard protocol read:
+            // - S1 Faster serial protocol developed for use with 1541 type
+            //   drives.
+            // - S2 Stock Commodore faster serial than S1, used by 1570, 1571
+            //   and 1581.
+            // - PP Parallel protocol, offers improve rates above serial, and
+            //   requires parallel pot mod.
+            // - P2 Parallel protocol 2, faster parallel protocol.
+            //
+            // These are all supported by uploading custom firmware routines
+            // to the drive.  That is outside the scope of the pico1541 - it
+            // is performed by the host software, such as OpenCBM, using the
+            // pico1541 as a data transmission vehicle.
             ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => {
                 self.non_cbm_read(len, protocol).await
             }
@@ -429,7 +442,19 @@ impl ProtocolDriver for IecDriver {
             // Standard Commodore IEC write
             ProtocolType::Cbm => self.cbm_write(len, protocol, flags).await,
 
-            // Non Commodore IEC write
+            // Non-standard protocol write:
+            // - S1 Faster serial protocol developed for use with 1541 type
+            //   drives.
+            // - S2 Stock Commodore faster serial than S1, used by 1570, 1571
+            //   and 1581.
+            // - PP Parallel protocol, offers improve rates above serial, and
+            //   requires parallel pot mod.
+            // - P2 Parallel protocol 2, faster parallel protocol.
+            //
+            // These are all supported by uploading custom firmware routines
+            // to the drive.  That is outside the scope of the pico1541 - it
+            // is performed by the host software, such as OpenCBM, using the
+            // pico1541 as a data transmission vehicle.
             ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => {
                 self.non_cbm_write(len, protocol, flags).await
             }
@@ -1025,199 +1050,6 @@ impl IecDriver {
 
         result
     }
-
-    async fn non_cbm_read(
-        &mut self,
-        len: u16,
-        protocol: ProtocolType,
-    ) -> Result<u16, (DriverError, u16)> {
-        // Check we can send bytes before we get started, so we don't have to
-        // pause in the middle of a transfer.  We could just wait for one byte
-        // of space, but we'll wait for enough space for an entire USB packet
-        // as the buffer should be twice that size.
-        UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
-
-        let num_bytes = match protocol {
-            ProtocolType::S1 | ProtocolType::S2 | ProtocolType::P2 => 1,
-            ProtocolType::PP => 2,
-            _ => unreachable!("Non-CBM read: Unsupported protocol type"),
-        };
-
-        let mut count = 0;
-
-        while count < len as usize {
-            // TODO - need some way of knowing when the transfer is being
-            // aborted
-            let mut buf = [0u8; 2];
-
-            // Get the byte(s) to read
-            let size = match protocol {
-                ProtocolType::S1 => self.read_s1(&mut buf).await,
-                ProtocolType::S2 => self.read_s2(&mut buf).await,
-                ProtocolType::PP => self.read_pp(&mut buf).await,
-                ProtocolType::P2 => self.read_p2(&mut buf).await,
-                _ => unreachable!("Non-CBM read: Unsupported protocol type"),
-            }
-            .map_err(|e| (e, count as u16))?;
-
-            // There should be no way for the read functions to return an
-            // unexpected number of bytes.
-            assert!(size == num_bytes);
-
-            // Send the data (immediately - don't wait for a full packet)
-            Self::send_data_to_host(&buf[..size], size)
-                .await
-                .map_err(|e| (e, count as u16))?;
-
-            count += size;
-        }
-
-        Ok(count as u16)
-    }
-
-    // S1 involves reading a bit at a time, starting with the MSB, as follows:
-    // - Wait for DATA line to be released
-    // - Release CLK
-    // - Pause briefly to allow it to stabilise
-    // - Read CLK - this is our next bit, with MSB first
-    // - Pull DATA low to acknowledge the bit
-    // - Wait for CLK to change
-    // - Release DATA
-    // - Pause briefly to allow DATA to stabilize
-    // - Wait for DATA to be pulled low
-    // - Pull CLK low
-    async fn read_s1(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
-        assert!(!data.is_empty());
-
-        let mut byte = 0;
-
-        for _ in 0..8 {
-            // Wait for DATA to be released
-            self.loop_and_yield_while(|| self.bus.get_data()).await?;
-
-            // Release the clock
-            self.bus.release_clock();
-            iec_delay!();
-
-            // Get the next bit - we read from MSB to LSB
-            let bit = self.bus.get_clock();
-            byte = (byte >> 1) | ((bit as u8) << 7);
-
-            // Pull data low
-            self.bus.set_data();
-
-            // Wait for CLOCK to change
-            self.loop_and_yield_while(|| bit == self.bus.get_clock())
-                .await?;
-
-            // Release the data line
-            self.bus.release_data();
-            iec_delay!();
-
-            // Wait for it to be pulled low
-            self.loop_and_yield_while(|| !self.bus.get_data()).await?;
-
-            // Pull CLOCK low
-            self.bus.set_clock();
-        }
-
-        data[0] = byte;
-        Ok(1)
-    }
-
-    // S2 involves reading a bit every time the CLOCK line changes, with the
-    // with first byte coming when the CLOCK line is pulled low, and hence the
-    // second with it high.
-    //
-    // After we detect the CLOCK changing, we pause to make sure DATA has time
-    // to stabilise.
-    //
-    // We flip ATN once we've read the bit.
-    async fn read_s2(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
-        assert!(!data.is_empty());
-
-        let mut byte = 0;
-
-        for _ in 0..4 {
-            // Wait for CLK to be released
-            self.loop_and_yield_while(|| self.bus.get_clock()).await?;
-
-            // Brief pause
-            iec_delay!();
-
-            // Read the bit from DATA
-            byte = (byte >> 1) | ((self.bus.get_data() as u8) << 7);
-
-            // Release ATN now we've read the bit
-            self.bus.release_atn();
-
-            // Wait for CLOCK to be pulled low
-            self.loop_and_yield_while(|| !self.bus.get_clock()).await?;
-
-            // Brief pause
-            iec_delay!();
-
-            // Read the bit
-            byte = (byte >> 1) | ((self.bus.get_data() as u8) << 7);
-
-            // Set ATN now we've read the bit
-            self.bus.set_atn();
-        }
-
-        data[0] = byte;
-        Ok(1)
-    }
-
-    // P2 involves reading a single byte from the paralle port as follows:
-    // - Release CLK
-    // - Wait for DATA to be released
-    // - Read the byte
-    // - Set CLK
-    // - Wait for DATA to be pulled low
-    async fn read_p2(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
-        self.bus.release_clock();
-
-        self.loop_and_yield_while(|| self.bus.get_data()).await?;
-
-        data[0] = self.read_pp_byte();
-
-        self.bus.set_clock();
-
-        self.loop_and_yield_while(|| !self.bus.get_data()).await?;
-
-        Ok(1)
-    }
-
-    // PP involves reading 2 bytes:
-    // - Wait for DATA to be pulled low
-    // - Read the byte from the parallel bus
-    // - Relase CLK
-    // - Wait for DATA to be released
-    // - Read the second byte from the parallel bus
-    // - Set CLK
-    async fn read_pp(&mut self, data: &mut [u8]) -> Result<usize, DriverError> {
-        assert!(data.len() >= 2);
-
-        // Wait for DATA to be pulled low
-        self.loop_and_yield_while(|| !self.bus.get_data()).await?;
-
-        // Read the first byte
-        data[0] = self.read_pp_byte();
-
-        // Release CLK
-        self.bus.release_clock();
-
-        // Wait for DATA to be released
-        self.loop_and_yield_while(|| self.bus.get_data()).await?;
-
-        // Read the second byte
-        data[1] = self.read_pp_byte();
-
-        // Set CLK
-        self.bus.set_clock();
-
-        Ok(2)
-    }
 }
 
 // Other private functions
@@ -1228,7 +1060,7 @@ impl IecDriver {
 
     /// Combined set and release operation
     #[inline(always)]
-    async fn set_release(&mut self, set: u8, release: u8) {
+    pub async fn set_release(&mut self, set: u8, release: u8) {
         self.bus.set_lines(set);
         self.bus.release_lines(release);
     }
@@ -1498,7 +1330,7 @@ impl IecDriver {
 
     // Send data using the USB data transfer object. This queues it up for
     // ProtocolHandler to send it.
-    async fn send_data_to_host(buffer: &[u8], buf_count: usize) -> Result<(), DriverError> {
+    pub async fn send_data_to_host(buffer: &[u8], buf_count: usize) -> Result<(), DriverError> {
         // Send the data to the host
         let mut sent_bytes = 0;
         loop {
@@ -1518,7 +1350,7 @@ impl IecDriver {
         Ok(())
     }
 
-    async fn loop_and_yield_while<F>(&self, mut condition: F) -> Result<(), DriverError>
+    pub async fn loop_and_yield_while<F>(&self, mut condition: F) -> Result<(), DriverError>
     where
         F: FnMut() -> bool,
     {

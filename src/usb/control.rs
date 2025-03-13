@@ -21,18 +21,18 @@ use embassy_usb::types::InterfaceNumber;
 use embassy_usb::Handler;
 use static_cell::StaticCell;
 
-use crate::built::{GIT_VERSION, PKG_VERSION, RUSTC_VERSION};
 use crate::constants::FIRMWARE_VERSION;
 use crate::constants::{
     ECHO_CONTROL_RESPONSE_LEN, INIT_CONTROL_RESPONSE_LEN, MAX_XUM_DEVINFO_SIZE_USIZE,
 };
-use crate::display::{update_status, DisplayType};
+use crate::infra::display::{update_status, DisplayType};
+use crate::infra::watchdog::reboot_dfu;
+use crate::protocol::types::{Capabilities, Direction, InitStatus};
 use crate::protocol::{
     get_ieee_present, get_protocol_init, get_tape_present, set_protocol_action,
     take_protocol_action, ProtocolAction,
 };
-use crate::types::{Capabilities, Direction, InitStatus};
-use crate::watchdog::reboot_dfu;
+use crate::util::built::{GIT_VERSION, PKG_VERSION, RUSTC_VERSION};
 
 // Our Control Handler handles Control requests that come in on the Control
 // endpoint, and the USB stack calls control_in() and control_out() for us

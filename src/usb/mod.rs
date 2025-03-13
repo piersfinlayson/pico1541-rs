@@ -4,6 +4,12 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+pub(crate) mod bulk;
+pub(crate) mod control;
+pub(crate) mod transfer;
+
+pub use bulk::bulk_task;
+
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_rp::bind_interrupts;
@@ -16,11 +22,12 @@ use embassy_usb::driver::{Driver, Endpoint as DriverEndpoint, EndpointType};
 use embassy_usb::{Builder, Config, UsbDevice};
 use static_cell::{ConstStaticCell, StaticCell};
 
+use control::Control;
+
 use crate::constants::{
     MAX_EP_PACKET_SIZE, MAX_PACKET_SIZE_0, USB_CLASS, USB_POWER_MA, USB_PROTOCOL, USB_SUB_CLASS,
 };
-use crate::control::Control;
-use crate::dev_info::{IN_EP, MANUFACTURER, OUT_EP, PRODUCT, PRODUCT_ID, VENDOR_ID};
+use crate::util::dev_info::{IN_EP, MANUFACTURER, OUT_EP, PRODUCT, PRODUCT_ID, VENDOR_ID};
 
 // Bind the hardware USB interrupt to the USB stack.  Interrupts are the
 // primary mechanism the USB stack uses to receive data from hardware.

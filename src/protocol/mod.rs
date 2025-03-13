@@ -6,6 +6,13 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
+mod driver;
+mod iec;
+mod ieee;
+mod read_non_cbm;
+mod tape;
+pub(crate) mod types;
+
 use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, Ordering};
 #[allow(unused_imports)]
@@ -20,22 +27,23 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointIn;
 
+use driver::{
+    abort, clear_abort, driver_in_use, raw_read_task, raw_write_task, Driver, DriverError,
+    ProtocolDriver, DRIVER,
+};
+use iec::{IecBus, IecDriver, Line};
+use types::Direction;
+
 use crate::constants::{
     LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_WRITE_SIZE_USIZE, PROTOCOL_LOOP_TIMER,
     PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE, TOTAL_GENERIC_GPIOS,
     USB_DATA_TRANSFER_WAIT_TIMER,
 };
-use crate::display::{update_status, DisplayType};
-use crate::driver::{
-    abort, clear_abort, driver_in_use, raw_read_task, raw_write_task, Driver, ProtocolDriver, DriverError, 
-    DRIVER,
-};
-use crate::gpio::{IecPinConfig, IeeePinConfig, GPIO};
-use crate::iec::{IecBus, IecDriver, Line};
-use crate::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
-use crate::types::Direction;
+use crate::infra::display::{update_status, DisplayType};
+use crate::infra::gpio::{IecPinConfig, IeeePinConfig, GPIO};
+use crate::infra::watchdog::{feed_watchdog, register_task, TaskId};
+use crate::usb::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
 use crate::usb::WRITE_EP;
-use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
 /// The PROTOCOL_ACTION static is a Signal that is used to communicate to the
 /// Protocol Handler that a protocol state change is requrested.  We use a

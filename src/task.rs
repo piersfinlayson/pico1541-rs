@@ -11,11 +11,11 @@ use embassy_rp::multicore::{spawn_core1 as rp_spawn_core1, Stack};
 use embassy_rp::peripherals::CORE1;
 use static_cell::{ConstStaticCell, StaticCell};
 
-use crate::bulk::bulk_task;
 use crate::constants::CORE1_STACK_SIZE;
+use crate::infra::watchdog::reboot_normal;
 use crate::protocol::protocol_handler_task;
-use crate::time::yield_us;
-use crate::watchdog::reboot_normal;
+use crate::usb::bulk_task;
+use crate::util::time::yield_us;
 
 // Threading and tasks model
 //

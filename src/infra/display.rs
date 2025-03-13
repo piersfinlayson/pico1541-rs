@@ -11,11 +11,12 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 
+use super::gpio::GPIO;
+use super::watchdog::{feed_watchdog, register_task, TaskId};
+
 use crate::constants::{
     STATUS_DISPLAY_BLINK_TIMER, STATUS_DISPLAY_TIMER, STATUS_DISPLAY_WATCHDOG_TIMER,
 };
-use crate::gpio::GPIO;
-use crate::watchdog::{feed_watchdog, register_task, TaskId};
 use crate::wifi::{is_wifi_supported, WIFI_GPIO_0};
 
 // The STATUS_DISPLAY static is used to signal to the StatusDisplay object

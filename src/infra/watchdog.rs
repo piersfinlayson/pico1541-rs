@@ -16,7 +16,7 @@ use embassy_time::{Duration, Instant, Timer};
 use rp2040_rom::ROM;
 
 use crate::constants::{WATCHDOG_LOOP_TIMER, WATCHDOG_TIMER};
-use crate::time::block_ms;
+use crate::util::time::block_ms;
 
 // We use the WATCHDOG static to store the Watchdog object, so we can feed it
 // from all of our tasks and objects.  This is shared and mutable.  We provide

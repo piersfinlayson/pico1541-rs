@@ -45,9 +45,9 @@ use crate::constants::{
     WIFI_CLK_PIN, WIFI_CONTROL_WAIT_TIMER, WIFI_CONTROL_WATCHDOG_TIMER, WIFI_DETECT_ADC_PIN,
     WIFI_DIO_PIN,
 };
-use crate::gpio::GPIO;
+use crate::infra::gpio::GPIO;
+use crate::infra::watchdog::{feed_watchdog, register_task, TaskId};
 use crate::task::spawn_or_reboot_yield;
-use crate::watchdog::{feed_watchdog, register_task, TaskId};
 
 //
 // Statics
@@ -256,7 +256,7 @@ impl WiFi {
         // doesn't not need to built into our application binary, but it does
         // need to be written somewhere to the Pico flash, and then loaded so
         // it can be passed into the cy43 IC.
-        let fw = include_bytes!("../firmware/cyw43/43439A0.bin");
+        let fw = include_bytes!("../../firmware/cyw43/43439A0.bin");
 
         // Create the WiFi stack.
         let state = WIFI_STATE.init(State::new());
@@ -334,7 +334,7 @@ pub fn is_wifi_supported() -> bool {
 // Initializes WiFI control, we can subsequently use it to control the WiFi
 // stack.
 async fn init_control(control: &mut Control<'_>) {
-    let clm = include_bytes!("../firmware/cyw43/43439A0_clm.bin");
+    let clm = include_bytes!("../../firmware/cyw43/43439A0_clm.bin");
     control.init(clm).await;
     control
         .set_power_management(cyw43::PowerManagementMode::PowerSave)

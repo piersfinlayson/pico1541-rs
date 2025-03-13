@@ -9,8 +9,8 @@
 use defmt::{debug, error, info, trace, warn};
 use embassy_time::Duration;
 
-use crate::driver::{DriverError, ProtocolDriver};
-use crate::protocol::{ProtocolFlags, ProtocolType};
+use super::driver::{DriverError, ProtocolDriver};
+use super::{ProtocolFlags, ProtocolType};
 
 pub struct TapeDriver {}
 
