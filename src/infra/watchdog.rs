@@ -13,7 +13,6 @@ use embassy_rp::watchdog::ResetReason;
 use embassy_rp::watchdog::Watchdog as RpWatchdog;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::{Duration, Instant, Timer};
-use rp2040_rom::ROM;
 
 use crate::constants::{WATCHDOG_LOOP_TIMER, WATCHDOG_TIMER};
 use crate::util::time::block_ms;
@@ -258,8 +257,20 @@ pub fn reboot_normal() -> ! {
 
 // Called to perform a reboot into BOOTSEL/DFU mode.
 pub fn reboot_dfu() -> ! {
-    unsafe {
-        ROM::reset_usb_boot(0, 0);
+    #[cfg(feature = "pico")]
+    {
+        embassy_rp::rom_data::reset_to_usb_boot(0, 0);
+        #[allow(clippy::empty_loop)]
+        loop {}
+    }
+    #[cfg(feature = "pico2")]
+    {
+        // Doesn't appear to reboot the device in BOOTSEL mode, not sure why
+        const REBOOT_TYPE_BOOTSEL: u32 = 0x0002;
+        const NO_RETURN_ON_SUCCESS: u32 = 0x0100;
+        let _ = embassy_rp::rom_data::reboot(REBOOT_TYPE_BOOTSEL | NO_RETURN_ON_SUCCESS, 0, 0, 0);
+        #[allow(clippy::empty_loop)]
+        loop {}
     }
 }
 

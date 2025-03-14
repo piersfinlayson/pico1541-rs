@@ -75,9 +75,6 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 # Allows us to handle bitflags gracefully
 bitflags = "2.8"
 
-# Exposes reset_usb_boot() RP2040 bootrom function (for reboot to DFU mode)
-rp2040-rom = "0.1.1"
-
 # Provides static asserts
 static_assertions = "1.1"
 
