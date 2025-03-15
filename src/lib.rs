@@ -35,7 +35,7 @@ mod util;
 mod wifi;
 
 // Extra binary information that picotool can read.
-#[link_section = ".bi_entries"]
+#[unsafe(link_section = ".bi_entries")]
 #[used]
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
     embassy_rp::binary_info::rp_program_name!(c"pico1541 by piers.rocks"),

@@ -24,7 +24,7 @@ probe-rs complete install
 
 ### Install Rust
 
-Skip if already installed.  Any modern version of Rust should be fine - pico1541-rs was primarily developed using 1.83 and 1.85.
+Skip if already installed.  Any version of Rust supporting the 2024 edition should be fine - pico1541-rs was primarily developed and tested using 1.85.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
