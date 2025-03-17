@@ -43,38 +43,3 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
     embassy_rp::binary_info::rp_cargo_version!(),
     embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
-
-// A note about Statics
-//
-// We set up statics primarily to avoid lifetime issues, and to allow us to
-// spawn tasks (accessing these statics), and to split our code into
-// separate modules.
-//
-// These are a bit tricksy to get right, so here is some general guidance:
-//
-// - Use StaticCell for statics that cannot be initialized at compile time.
-//
-// - Use ConstStaticCell for statics that can be initialized at compile time.
-//   Note that initialization is different than mutability.  A ConstStaticCell
-//   can be mutable, when used with RefCell, but it must be initialized at
-//   compile time.  It also cannot be take()n and then modified and then
-//   take()n again.
-//
-// - If your static will be immutable, that is all that is required.
-//
-// - If your static will be mutable, but you will be passing ownership of it
-//   to another object, then no Mutex is required either.
-//
-// - If you need mutable access, you need to use a Mutex.  If you are using a
-//   embassy_sync::mutex::Mutex (which is async) you do not need a RefCell for
-//   interior mutability.  If you use a blocking_mutexx::Mutex you do.
-//   - Generally use CriticalSectionRawMutex, as these work on multi-core
-//     systems.
-//   - ThreadModeRawMutex is, as it sounds, so single threaded usage.
-//   - NoopRawMutex is for when you don't need a mutex.
-//
-//   Our implementation is not sufficiently dependent on performance to
-//   require optimization here, so we tend to use CriticalSectionRawMutex.
-//
-// The statics tend to be stored in the module that creates them.  So, for
-// example, the GPIO static is in gpio.

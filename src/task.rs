@@ -17,35 +17,8 @@ use crate::protocol::protocol_handler_task;
 use crate::usb::bulk_task;
 use crate::util::time::yield_us;
 
-// Threading and tasks model
-//
-// One the Pico we have 2 cores available - 0 and 1.
-//
-// Core 0 is the main core, and is where the main() function runs.  We use it
-// for all of the non-protocol handling tasks, including
-// - the embassy USB stack (which handles the USB protocol and control
-//   handling)
-// - the display task (which handles the status LED)
-// - the watchdog task
-//
-// In the future, it is expected that core 0 will also gain WiFi and any other
-// support.
-//
-// Core 1 handles bulk USB transfers and all Commodore protocol handling.  This
-// is an improvement over the situation on the stock xum1541, which only has a
-// single core.  Hence the USB stack itself, control handling and the status
-// LED are all handled on the same core as the protocol support.
-//
-// Tasks can be spawned only on core 0 using the Spawner object pass into
-// main().  Core 1 tasks must be spawned via an Eexecutor.  We could use an
-// executor to spawn a task on core 0 as well, but you can only spawn a single
-// runner that way, which would mean handling scheduling for core 0's tasks.
-// Hence we stick with the Spawner for core 0, and use the executor only for
-// core 1
-//
-// Therefore, for consistency between the cores, we spawn tasks on voth cores
-// using Executors.  These are stored by non-public statics, and hence can
-// only be access via this module, which improved safety.
+// See [`README.md`](README.md#execution-and-task-model) for a description of
+// the execution and task model. 
 
 //
 // Statics
