@@ -56,7 +56,7 @@ cyw43-pio = { version = "0.3", package = "cyw43-pio", features = ["defmt"] }
 
 # Required for StaticCell and ConstStaticCell
 static_cell = { version = "2.1" }
-portable-atomic = { version = "1.10", features = ["critical-section"] }
+portable-atomic = { version = "1.11", features = ["critical-section"] }
 
 # Required for heapless::{String, Vec}
 heapless = { version = "0.8" }
