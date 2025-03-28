@@ -12,7 +12,7 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
 fi
 
 # Get arguments
-BIN=$1
+MODE=$1
 BOARD=$2
 BUILD_TYPE=$3
 
@@ -25,14 +25,14 @@ if [[ "$BUILD_TYPE" == "release" ]]; then
 fi
 
 # Validate arguments
-validate_args "$BIN" "$BOARD"
+validate_args "$MODE" "$BOARD"
 
 # Validate build type
 validate_build_type "$BUILD_TYPE" || exit 1
 
 # Function to build a single binary for a specific board
 build_single() {
-    local bin=$1
+    local mode=$1
     local board=$2
     
     # Get the appropriate target for the board
@@ -40,19 +40,19 @@ build_single() {
     
     # Print build information
     echo "--------------------------------------------"
-    echo "Building $bin for $board (target: $target)"
+    echo "Building $mode for $board (target: $target)"
     echo "--------------------------------------------"
     
     # Execute cargo build with the appropriate parameters
     set -x
-    cargo build --bin "$bin" --features "$bin,$board" --target "$target" $RELEASE_FLAG
+    cargo build --bin pico1541 --features "$mode,$board" --target "$target" $RELEASE_FLAG
     local build_exit_code=$?
     set +x
     
     if [ $build_exit_code -eq 0 ]; then
         echo "Build successful!"
         # Show the path to the built binary
-        echo "Binary located at: target/$target/$BUILD_DIR/$bin"
+        echo "Binary located at: target/$target/$BUILD_DIR/$mode"
         echo ""
         return 0
     else
@@ -61,15 +61,15 @@ build_single() {
     fi
 }
 
-# Handle "all" option for BIN and BOARD
-if [[ "$BIN" == "all" && "$BOARD" == "all" ]]; then
+# Handle "all" option for MODE and BOARD
+if [[ "$MODE" == "all" && "$BOARD" == "all" ]]; then
     # Build all combinations
-    echo "Building all binary and board combinations..."
+    echo "Building all mode and board combinations..."
     
     exit_code=0
-    for bin in "xum1541" "pico1541"; do
+    for mode in "pico1541"; do
         for board in "pico" "pico2"; do
-            build_single "$bin" "$board"
+            build_single "$mode" "$board"
             if [ $? -ne 0 ]; then
                 exit_code=1
             fi
@@ -83,13 +83,13 @@ if [[ "$BIN" == "all" && "$BOARD" == "all" ]]; then
     fi
     exit $exit_code
     
-elif [[ "$BIN" == "all" ]]; then
+elif [[ "$MODE" == "all" ]]; then
     # Build all binaries for a specific board
     echo "Building all binaries for $BOARD..."
     
     exit_code=0
-    for bin in "xum1541" "pico1541"; do
-        build_single "$bin" "$BOARD"
+    for mode in "pico1541"; do
+        build_single "$mode" "$BOARD"
         if [ $? -ne 0 ]; then
             exit_code=1
         fi
@@ -104,25 +104,25 @@ elif [[ "$BIN" == "all" ]]; then
     
 elif [[ "$BOARD" == "all" ]]; then
     # Build a specific binary for all boards
-    echo "Building $BIN for all boards..."
+    echo "Building $MODE for all boards..."
     
     exit_code=0
     for board in "pico" "pico2"; do
-        build_single "$BIN" "$board"
+        build_single "$MODE" "$board"
         if [ $? -ne 0 ]; then
             exit_code=1
         fi
     done
     
     if [ $exit_code -eq 0 ]; then
-        echo "All builds of $BIN completed successfully!"
+        echo "All builds of $MODE completed successfully!"
     else
-        echo "Some builds of $BIN failed. Check the output above for details." >&2
+        echo "Some builds of $MODE failed. Check the output above for details." >&2
     fi
     exit $exit_code
     
 else
     # Build a single binary for a specific board
-    build_single "$BIN" "$BOARD"
+    build_single "$MODE" "$BOARD"
     exit $?
 fi

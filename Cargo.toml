@@ -16,43 +16,38 @@ xum1541 = [ "compatibility" ]
 pico1541 = [ "extended" ]
 compatibility = []
 extended = []
-pico = [ "embassy-rp/rp2040" ]
-pico2 = [ "embassy-rp/rp235xa" ]
+pico = [ "embassy-rp/rp2040", "task-watchdog/rp2040-embassy" ]
+pico2 = [ "embassy-rp/rp235xa", "task-watchdog/rp2350-embassy" ]
 
 [lib]
 name = "pico1541_rs"
 path = "src/lib.rs"
 test = false
 
-# Builds an xum1541 compatible firmware - you have manually specify the
-# required feature(s)
-[[bin]]
-name = "xum1541"
-path = "src/bin/xum1541.rs"
-test = false
-required-features = ["xum1541"]
-
-# Builds a pico1541 firmware  - you have to manually specify the required
-# feature(s).  This includes the Pico W with WiFi support automatically
-# enabled when the W variant is detected.
+# Builds the firmware  - you have to manually specify the required features.
+# Use either xum1541 or pico1541, and either pico or pico2.
+# For example:
+# ```bash 
+# cargo build --bin pico1541 --features xum1541,pico
+# ```
 [[bin]]
 name = "pico1541"
 path = "src/bin/pico1541.rs"
 test = false
-required-features = ["pico1541"]
 
 [dependencies]
 # embassy-rs crates - Note these are patched below to use a later version from
 # git.
 embassy-executor = { version = "0.7", features = ["task-arena-size-32768", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-rp = { version = "0.3", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "binary-info", "intrinsics"] }
+embassy-rp = { version = "0.4", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "binary-info", "intrinsics"] }
 embassy-usb = { version = "0.4", features = ["defmt"] }
 embassy-futures = { version = "0.1" }
 embassy-sync = { version = "0.6", features = ["defmt"] }
 embassy-time = { version = "0.4", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-embedded-hal = { version = "0.3" }
 cyw43 = { version = "0.3", package = "cyw43", features = ["defmt", "firmware-logs"] }
-cyw43-pio = { version = "0.3", package = "cyw43-pio", features = ["defmt"] }
+cyw43-pio = { version = "0.4", package = "cyw43-pio", features = ["defmt"] }
+embedded-hal = { version = "1.0" }
 
 # Required for StaticCell and ConstStaticCell
 static_cell = { version = "2.1" }
@@ -78,19 +73,24 @@ bitflags = "2.8"
 # Provides static asserts
 static_assertions = "1.1"
 
+# Provides a task watchdog implementation
+task-watchdog = { version = "0.1", features = [ "defmt-embassy-rp"] }
+
 # embassy on crates.io doesn't seem to be very up to date.  Therefore we need
 # to patch with a later version from the git repository.  The commit was
 # chosen based on the HEAD on 2025-03-11, 06:45 + 00:00.
 [patch.crates-io]
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
-embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
-embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
-embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
-cyw43 = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
-cyw43-pio = { git = "https://github.com/embassy-rs/embassy", rev = "a704c41a368b3a48751d58f5e5227f1fb8fc621c" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9", version = "0.2.0" }
+embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9", version = "0.1.0" }
+cyw43 = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy", rev = "9d672c44d1dccaac039c656bc2986c4fcf9823c9" }
 
 [build-dependencies]
 # Required for required build.rs support
