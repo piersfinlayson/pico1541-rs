@@ -1,0 +1,21 @@
+FROM jenkins/agent:latest
+
+USER root
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    gcc-arm-none-eabi \
+    libnewlib-arm-none-eabi \
+    libstdc++-arm-none-eabi-newlib \
+    sudo
+
+    # Configure sudo for jenkins user
+RUN echo "jenkins ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Install Rust and required targets
+USER jenkins
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN $HOME/.cargo/bin/rustup component add llvm-tools-preview
+RUN $HOME/.cargo/bin/rustup target add thumbv6m-none-eabi
+RUN $HOME/.cargo/bin/rustup target add thumbv8m.main-none-eabihf
+ENV PATH="$HOME/.cargo/bin:${PATH}"
