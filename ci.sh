@@ -5,7 +5,7 @@ set -x
 # Install Rust and requried targets
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 export PATH="$HOME/.cargo/bin:$PATH"
-rustup target add thumbv6-none-eabi
+rustup target add thumbv6m-none-eabi
 rustup target add thumbv8m.main-none-eabihf
 
 # Build debug and release binaries for all boards
