@@ -21,7 +21,7 @@ use crate::protocol::ProtocolType;
 use crate::protocol::types::Direction;
 
 /// A static for IN/Read and OUT/Write USB bulk data transfers between the
-/// host and device.  We use a ThreadModeRawMutex, as the Bulk task (which
+/// host and device.  We use a `ThreadModeRawMutex`, as the Bulk task (which
 /// sends/receives the USB data) and the Protocol Handler both run on the
 /// same core, core 1.
 pub static USB_DATA_TRANSFER: Mutex<ThreadModeRawMutex, UsbDataTransfer> =
@@ -32,7 +32,7 @@ pub static USB_DATA_TRANSFER: Mutex<ThreadModeRawMutex, UsbDataTransfer> =
 /// This struct is set up when a WRITE or READ bulk transfer command is
 /// received, and is used to manage the transfer of data to or from the host.
 ///
-/// Users can either lock the USB_DATA_TRANSFER static and call the instance
+/// Users can either lock the `USB_DATA_TRANSFER` static and call the instance
 /// methods directly (for example, if they want to perform multiple
 /// operations with relinquishing the lock) or call the associated functions,
 /// which will handle locking.
@@ -270,13 +270,13 @@ impl UsbDataTransfer {
     /// Initialize the transfer
     pub async fn lock_init(direction: Direction, protocol: ProtocolType, expected_bytes: u16) {
         let mut guard = USB_DATA_TRANSFER.lock().await;
-        guard.init(direction, protocol, expected_bytes)
+        guard.init(direction, protocol, expected_bytes);
     }
 
     /// Clear the transfer
     pub async fn lock_clear() {
         let mut guard = USB_DATA_TRANSFER.lock().await;
-        guard.clear()
+        guard.clear();
     }
 
     /// Get the direction of the transfer
@@ -294,7 +294,7 @@ impl UsbDataTransfer {
     /// Set the response
     pub async fn lock_set_response(response: UsbTransferResponse) {
         let mut guard = USB_DATA_TRANSFER.lock().await;
-        guard.set_response(response)
+        guard.set_response(response);
     }
 
     /// Query expected bytes
