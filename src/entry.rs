@@ -13,12 +13,12 @@ use embassy_time::Ticker;
 use crate::constants::LOOP_LOG_INTERVAL;
 use crate::infra::display::status_task;
 use crate::infra::gpio::Gpio;
-use crate::infra::watchdog::{watchdog_task, Watchdog};
-use crate::task::{core1_spawn, spawn_or_reboot_yield};
-use crate::usb::{usb_task, UsbStack};
+use crate::infra::watchdog::{create_watchdog, watchdog_task};
+use crate::task::{core1_spawn, spawn_or_panic_yield};
+use crate::usb::{UsbStack, usb_task};
 use crate::util::built::log_fw_info;
 use crate::util::dev_info::get_serial;
-use crate::wifi::{spawn_wifi, WiFi};
+use crate::wifi::{WiFi, spawn_wifi};
 
 /// The main function.  This is the entry point for our application and like
 /// most embedded implementations, we do not want it to exit as that would
@@ -79,7 +79,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // Set up the watchdog - stores it in the WATCHDOG static.  We do this
     // before we create any tasks (as they might try and access the static
     // once that's happened, in order to feed it).
-    Watchdog::create_static(p_watchdog);
+    let watchdog = create_watchdog(p_watchdog);
 
     // Spawn the watchdog task.  We do this very early, in case there's some
     // kind on hang on core 0, and we're unable to feed it - this will cause
@@ -89,7 +89,7 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // other tasks themselves register with the watchdog when starting up.
     // Therefore, they should be running and feeding the watchdog before it
     // starts checking.
-    spawn_or_reboot_yield(spawner.spawn(watchdog_task()), "Watchdog").await;
+    spawn_or_panic_yield(spawner.spawn(watchdog_task(watchdog)), "Watchdog").await;
 
     // Create the Gpio object, which manages the pins
     Gpio::create_static(
@@ -120,26 +120,26 @@ pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // Display, as that will use the WiFi GPIO for the status LED (if WiFI
     // is supported).
     if let Some(wifi_args) = wifi.init().await {
-        spawn_wifi(&spawner, wifi_args).await;
+        spawn_wifi(&spawner, wifi_args, watchdog).await;
     }
 
     // Spawn the status display task.  We do this before any other tasks, as
     // once they are created they may try to update the status display.
     // However, it must be done after the GPIO static is created, as it needs
     // to retrieve the appropriate pin.
-    spawn_or_reboot_yield(spawner.spawn(status_task()), "Status Display").await;
+    spawn_or_panic_yield(spawner.spawn(status_task(watchdog)), "Status Display").await;
 
     // Create the USB stack and the Bulk object.  We do this at the same time
     // because Bulk needs the endpoints from the USB Stack creation.
-    let usb = UsbStack::create_static(p_usb, usb_serial).await;
+    let usb = UsbStack::create_static(p_usb, usb_serial, watchdog).await;
 
     // Spawn the USB stack.  The Bulk task will be spawned as part of
     // launching core 1.
-    spawn_or_reboot_yield(spawner.spawn(usb_task(usb)), "USB").await;
+    spawn_or_panic_yield(spawner.spawn(usb_task(usb)), "USB").await;
 
     // Spawn the core1 task to start the Bulk task and the core Commodore
     // protocol handling.
-    core1_spawn(p_core1);
+    core1_spawn(p_core1, watchdog);
 
     // Now just loop forever, logging every so often.
     let core = embassy_rp::pac::SIO.cpuid().read();

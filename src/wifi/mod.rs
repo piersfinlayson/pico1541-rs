@@ -26,7 +26,7 @@
 #![allow(unused_imports)]
 use core::sync::atomic::{AtomicBool, Ordering};
 use cyw43::{Control, Runner, State};
-use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
+use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::{Executor, Spawner};
 use embassy_rp::adc::{Adc, Async, Channel, Config, InterruptHandler};
@@ -46,8 +46,8 @@ use crate::constants::{
     WIFI_DIO_PIN,
 };
 use crate::infra::gpio::GPIO;
-use crate::infra::watchdog::{feed_watchdog, register_task, TaskId};
-use crate::task::spawn_or_reboot_yield;
+use crate::infra::watchdog::{TaskId, WatchdogType};
+use crate::task::spawn_or_panic_yield;
 
 //
 // Statics
@@ -277,18 +277,23 @@ pub async fn spawn_wifi(
         Control<'static>,
         Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
     ),
+    watchdog: &'static WatchdogType,
 ) {
     // Break out the arguments
     let (mut control, runner) = wifi_args;
 
     // Spawn the WiFi task.
-    spawn_or_reboot_yield(spawner.spawn(cyw43_task(runner)), "cyw43 WiFi").await;
+    spawn_or_panic_yield(spawner.spawn(cyw43_task(runner)), "cyw43 WiFi").await;
 
     // Now the WiFi task is spwaned, initialize the WiFi control object..
     init_control(&mut control).await;
 
     // Spawn the control task.
-    spawn_or_reboot_yield(spawner.spawn(wifi_control_task(control)), "WiFi Control").await;
+    spawn_or_panic_yield(
+        spawner.spawn(wifi_control_task(control, watchdog)),
+        "WiFi Control",
+    )
+    .await;
 }
 
 /// Method to run the WiFi stack.
@@ -304,13 +309,19 @@ pub async fn cyw43_task(
 
 /// Method to run the WiFi control task
 #[embassy_executor::task]
-pub async fn wifi_control_task(mut control: Control<'static>) -> ! {
+pub async fn wifi_control_task(
+    mut control: Control<'static>,
+    watchdog: &'static WatchdogType,
+) -> ! {
     // Register with the watchdog
-    register_task(TaskId::WiFiControl, WIFI_CONTROL_WATCHDOG_TIMER);
+    let id = TaskId::WiFiControl;
+    watchdog
+        .register_task(&id, WIFI_CONTROL_WATCHDOG_TIMER)
+        .await;
 
     loop {
         // Feed the watchdog.
-        feed_watchdog(TaskId::WiFiControl);
+        watchdog.feed(&id).await;
 
         // Wait for the signal to update the WiFi GPIO 0.
         if let Ok(state) = with_timeout(WIFI_CONTROL_WAIT_TIMER, WIFI_GPIO_0.wait()).await {

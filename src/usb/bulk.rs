@@ -14,7 +14,7 @@ use embassy_rp::usb::{Endpoint, Out};
 use embassy_usb::driver::{Endpoint as DriverEndpoint, EndpointOut};
 
 use crate::constants::{MAX_EP_PACKET_SIZE, MAX_WRITE_SIZE_USIZE};
-use crate::infra::display::{update_status, DisplayType};
+use crate::infra::display::{DisplayType, update_status};
 use crate::protocol::WRITE_DATA_CHANNEL;
 use crate::usb::READ_EP;
 

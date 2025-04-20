@@ -28,6 +28,12 @@ The [`infra`](infra/mod.rs) module provides infrastructure used throughout the p
 * [`gpio`](infra/gpio.rs) - Implements the [`Gpio`] object, accessed via [`GPIO`] static to:
  * Contain the mapping of physical PINs to usage
  * Dynamically manage allocation of GPIO objects to other objects
+* [`watchdog`](util/watchdog.rs) - Implements the [`Watchdog`] object to:
+ * Manage interactions with the hardware watchdog
+ * Allow tasks to register and deregister (i.e., be policed and unpoliced by the watchdog)
+ * Allow processes to feed the watchdog
+ * Reboot the system if a registered task fails to feed the watchdog in the required time
+ * Provide additional functionality related to rebooting the system (such as entering DFU mode)
 
 #### utils
 
@@ -36,12 +42,6 @@ The [`utils`](util/mod.rs) module provides various utility and miscellaneous fun
 * [`built`](util/built.rs) - Retrieves build information about the pico1541-rs crate and exposes it for inclusion in the source code, particularly for including build-time and other crate/application information in device logging.
 * [`dev_info`](util/dev_info.rs) - Provides access to device information at runtime, particularly handling the retrieval of device serial numbers.
 * [`time`](util/time.rs) - Provides functions and macros for both blocking (sync) and yielding (async) timers, and timeouts used by the Commodore IEC protocol.
-* [`watchdog`](util/watchdog.rs) - Implements the [`Watchdog`] object, accessed via the [`WATCHDOG`] static and helper functions, to:
- * Manage interactions with the hardware watchdog
- * Allow tasks to register and deregister (i.e., be policed and unpoliced by the watchdog)
- * Allow processes to feed the watchdog
- * Reboot the system if a registered task fails to feed the watchdog in the required time
- * Provide additional functionality related to rebooting the system (such as entering DFU mode)
 
 #### usb
 

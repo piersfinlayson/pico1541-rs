@@ -3,7 +3,7 @@
 # Common functions for build.sh and run.sh
 
 # Valid argument values
-VALID_BINS=("xum1541" "pico1541" "all")
+VALID_MODES=("xum1541" "pico1541" "all")
 VALID_BOARDS=("pico" "pico2" "all")
 
 # Target mappings
@@ -14,10 +14,10 @@ TARGETS["pico2"]="thumbv8m.main-none-eabihf"
 # Function to show usage
 show_usage() {
     local script_name=$(basename "$0")
-    echo "Usage: $script_name <binary> <board> [release]"
+    echo "Usage: $script_name <mode> <board> [release]"
     echo ""
     echo "Arguments:"
-    echo "  <binary>   Binary to build/run (xum1541, pico1541, all)"
+    echo "  <mode>     Mode to build/run (xum1541, pico1541, all)"
     echo "  <board>    Target board (pico, pico2, all)"
     echo "  [release]  Optional: Add this to build/run in release mode"
     echo ""
@@ -30,20 +30,20 @@ show_usage() {
 
 # Function to validate arguments
 validate_args() {
-    local bin=$1
+    local mode=$1
     local board=$2
 
     # Check if we have both arguments
-    if [[ -z "$bin" || -z "$board" ]]; then
+    if [[ -z "$mode" || -z "$board" ]]; then
         echo "Error: Missing required arguments" >&2
         show_usage
         exit 1
     fi
 
     # Validate binary
-    if [[ ! " ${VALID_BINS[*]} " =~ " ${bin} " ]]; then
-        echo "Error: Invalid binary '$bin'" >&2
-        echo "Valid binaries are: xum1541, pico1541, all" >&2
+    if [[ ! " ${VALID_MODES[*]} " =~ " ${mode} " ]]; then
+        echo "Error: Invalid mode '$mode'" >&2
+        echo "Valid modes are: xum1541, pico1541, all" >&2
         exit 1
     fi
 

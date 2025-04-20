@@ -17,8 +17,8 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::Timer;
 
 use crate::constants::{TRANSFER_DATA_BUFFER_SIZE, USB_DATA_TRANSFER_WAIT_TIMER};
-use crate::protocol::types::Direction;
 use crate::protocol::ProtocolType;
+use crate::protocol::types::Direction;
 
 /// A static for IN/Read and OUT/Write USB bulk data transfers between the
 /// host and device.  We use a ThreadModeRawMutex, as the Bulk task (which

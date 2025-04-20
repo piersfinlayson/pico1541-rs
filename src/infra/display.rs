@@ -12,12 +12,12 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 
 use super::gpio::GPIO;
-use super::watchdog::{feed_watchdog, register_task, TaskId};
+use super::watchdog::{TaskId, WatchdogType};
 
 use crate::constants::{
     STATUS_DISPLAY_BLINK_TIMER, STATUS_DISPLAY_TIMER, STATUS_DISPLAY_WATCHDOG_TIMER,
 };
-use crate::wifi::{is_wifi_supported, WIFI_GPIO_0};
+use crate::wifi::{WIFI_GPIO_0, is_wifi_supported};
 
 // The STATUS_DISPLAY static is used to signal to the StatusDisplay object
 // that it needs to update the LED state.
@@ -42,7 +42,7 @@ pub enum DisplayType {
 /// Handles the operation of the status LED based on the current device state
 pub struct StatusDisplay {
     /// The Pico GPIO pin connected to the LED.  If None, we are using the
-    /// WiFi status GPIO instead.  
+    /// Wi-Fi status GPIO instead.  
     led: Option<Output<'static>>,
 
     /// Current state of the device
@@ -56,19 +56,19 @@ pub struct StatusDisplay {
 }
 
 impl StatusDisplay {
-    /// Creates a new StatusDisplay with the specified LED pin..
+    /// Creates a new `StatusDisplay` with the specified LED pin..
     ///
     /// The LED is initially turned on (Init state)
     pub async fn new() -> Self {
         // Does this board support WiFi?
         let wifi = is_wifi_supported();
 
-        let led = if !wifi {
-            debug!("WiFi not supported, getting Pico status display pin");
-            Some(Self::get_local_display_pin().await)
-        } else {
+        let led = if wifi {
             // led == None indicates we are using the WiFI status LED
             None
+        } else {
+            debug!("WiFi not supported, getting Pico status display pin");
+            Some(Self::get_local_display_pin().await)
         };
 
         // Create the display with the LED off
@@ -94,7 +94,7 @@ impl StatusDisplay {
     }
 
     // Turns the appropriate LED on
-    async fn led_on(&mut self) {
+    fn led_on(&mut self) {
         if let Some(led) = self.led.as_mut() {
             led.set_high();
         } else {
@@ -104,7 +104,7 @@ impl StatusDisplay {
     }
 
     // Turns the appropriate LED off
-    async fn led_off(&mut self) {
+    fn led_off(&mut self) {
         if let Some(led) = self.led.as_mut() {
             led.set_low();
         } else {
@@ -116,7 +116,7 @@ impl StatusDisplay {
     /// Update the current status
     ///
     /// This is calld by other tasks to change what the LED displays.
-    pub async fn update(&mut self, status: DisplayType) {
+    pub fn update(&mut self, status: DisplayType) {
         debug!("Display status updated to: {}", status);
 
         // Only update LED immediately if changing to/from states with
@@ -127,10 +127,10 @@ impl StatusDisplay {
             // Apply immediate LED state change based on new status
             match status {
                 DisplayType::Init => {
-                    self.led_on().await;
+                    self.led_on();
                 }
                 DisplayType::Ready => {
-                    self.led_off().await;
+                    self.led_off();
                 }
                 // For Active and Error states, we'll handle the toggling
                 // in do_work()
@@ -145,20 +145,20 @@ impl StatusDisplay {
     /// which the next action should be performed).
     /// Returns the maximum Duration until the next time this function should
     /// be called.
-    async fn do_work(&mut self) -> Duration {
+    fn do_work(&mut self) -> Duration {
         // Handle LED updates based on current status
         match self.current_status {
-            DisplayType::Init => self.do_on().await,
-            DisplayType::Ready => self.do_off().await,
-            DisplayType::Active | DisplayType::Error => self.do_blink().await,
+            DisplayType::Init => self.do_on(),
+            DisplayType::Ready => self.do_off(),
+            DisplayType::Active | DisplayType::Error => self.do_blink(),
         }
     }
 
     // Handles turning the LED off from within the do_work() function.
-    async fn do_on(&mut self) -> Duration {
+    fn do_on(&mut self) -> Duration {
         // LED is always on in Init state, nothing to do
         if !self.led_state {
-            self.led_on().await;
+            self.led_on();
         }
 
         // No urgent updates needed, can wait the default time
@@ -166,10 +166,10 @@ impl StatusDisplay {
     }
 
     // Handles turning the LED off from within the do_work() function.
-    async fn do_off(&mut self) -> Duration {
+    fn do_off(&mut self) -> Duration {
         // LED is always off in Ready state, nothing to do
         if self.led_state {
-            self.led_off().await;
+            self.led_off();
         }
 
         // No urgent updates needed, can wait the default time
@@ -179,7 +179,7 @@ impl StatusDisplay {
     // Handles LED blinking, returns the time until the next update is needed.
     // Works by toggling the LED every STATUS_DISPLAY_BLINK_TIMER regardless
     // of how often we're called.
-    async fn do_blink(&mut self) -> Duration {
+    fn do_blink(&mut self) -> Duration {
         // Find out how long it is since we last toggled the LED
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_toggle);
@@ -187,7 +187,7 @@ impl StatusDisplay {
         // Figure out if we need to toggle it.
         if elapsed.as_millis() >= STATUS_DISPLAY_BLINK_TIMER.as_millis() {
             // Time to toggle
-            self.toggle_led().await;
+            self.toggle_led();
 
             // Time until next toggle
             STATUS_DISPLAY_BLINK_TIMER
@@ -198,11 +198,11 @@ impl StatusDisplay {
     }
 
     /// Toggle the LED state.
-    async fn toggle_led(&mut self) {
+    fn toggle_led(&mut self) {
         if self.led_state {
-            self.led_off().await;
+            self.led_off();
         } else {
-            self.led_on().await;
+            self.led_on();
         }
         self.last_toggle = Instant::now();
     }
@@ -211,7 +211,7 @@ impl StatusDisplay {
 /// Runs the status display task.
 /// This is an embassy executor task that periodically calls do_work()
 #[embassy_executor::task]
-pub async fn status_task() -> ! {
+pub async fn status_task(watchdog: &'static WatchdogType) -> ! {
     // Get the core number, in order to log it.
     let core = embassy_rp::pac::SIO.cpuid().read();
     info!("Core{}: Status display task started", core);
@@ -220,20 +220,23 @@ pub async fn status_task() -> ! {
     let mut display = StatusDisplay::new().await;
 
     // Register with the watchdog
-    register_task(TaskId::Display, STATUS_DISPLAY_WATCHDOG_TIMER);
+    let id = TaskId::Display;
+    watchdog
+        .register_task(&id, STATUS_DISPLAY_WATCHDOG_TIMER)
+        .await;
 
     loop {
         // Feed the watchdog
-        feed_watchdog(TaskId::Display);
+        watchdog.feed(&id).await;
 
         // Update the status if necessary
         if let Some(new_status) = STATUS_DISPLAY.try_take() {
-            display.update(new_status).await
+            display.update(new_status);
         }
 
         // Let the status display do some work and get the time until next
         // update.
-        let next_update = display.do_work().await;
+        let next_update = display.do_work();
 
         // Determine how long to wait - use the minimum of:
         // 1. The time until the next LED update is needed (from do_work)

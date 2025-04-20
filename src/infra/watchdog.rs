@@ -5,139 +5,33 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use core::cell::RefCell;
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::peripherals::WATCHDOG as P_RpWatchdog;
-use embassy_rp::watchdog::ResetReason;
-use embassy_rp::watchdog::Watchdog as RpWatchdog;
-use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_rp::peripherals::WATCHDOG as p_WATCHDOG;
+use static_cell::StaticCell;
+use task_watchdog::embassy_rp::{WatchdogRunner, watchdog_run};
+use task_watchdog::{Id, WatchdogConfig};
 
-use crate::constants::{WATCHDOG_LOOP_TIMER, WATCHDOG_TIMER};
-use crate::util::time::block_ms;
+use crate::constants::{WATCHDOG_CHECK_INTERVAL, WATCHDOG_HW_TIMEOUT};
+
+// Create a type alias for the WatchdogRunner to make it easier to use.
+pub type WatchdogType = WatchdogRunner<TaskId, NUM_TASK_IDS>;
 
 // We use the WATCHDOG static to store the Watchdog object, so we can feed it
-// from all of our tasks and objects.  This is shared and mutable.  We provide
-// helper function to allow tasks to register with, feed and use the watchdog:
-// - register_task()
-// - feed_watchdog()
-// - reboot_normal()
-// - reboot_dfu()
-pub static WATCHDOG: Mutex<CriticalSectionRawMutex, RefCell<Option<Watchdog>>> =
-    Mutex::new(RefCell::new(None));
-
-// The Watchdog object implements a multi-task capable watchdog, that ensures
-// that the hardware watchdog is only thread is all of our threads remain
-// running, and feeding this watchdog.
-pub struct Watchdog {
-    /// THe hardware watchdog object
-    hw_watchdog: RpWatchdog,
-
-    /// The tasks which are policed by the watchdog
-    tasks: [Option<Task>; TaskId::Num as usize],
-}
-
-impl Watchdog {
-    /// Creates a new Watchdog object and stores it in the WATCHDOG static.
-    pub fn create_static(p_watchdog: P_RpWatchdog) {
-        // Set up the hardware watchdog
-        let hw_watchdog = RpWatchdog::new(p_watchdog);
-
-        // Log the last reset reason
-        let rr_str = match hw_watchdog.reset_reason() {
-            Some(ResetReason::Forced) => "forced",
-            Some(ResetReason::TimedOut) => "watchdog timer",
-            None => "unknown",
-        };
-        info!("Last reset reason: {}", rr_str);
-
-        // Create our watchdog object
-        let watchdog = Watchdog {
-            hw_watchdog,
-            tasks: [const { None }; TaskId::Num as usize],
-        };
-
-        // Store our watchdog object in the static
-        WATCHDOG.lock(|w| {
-            *w.borrow_mut() = Some(watchdog);
-        });
-    }
-
-    /// Registers a task with this watchdog.
-    pub fn register_task(&mut self, task: Task) {
-        let task_id = task.id;
-        let idx = task_id as usize;
-        if idx < TaskId::Num as usize {
-            self.tasks[idx] = Some(task);
-        }
-        debug!("Watchdog - registered task: {}", task_id);
-    }
-
-    /// De-registers a task with this watchdog.  The watchdog will not require
-    /// that task to feed it until it is re-registered.
-    #[allow(dead_code)]
-    pub fn deregister_task(&mut self, task_id: TaskId) {
-        let idx = task_id as usize;
-        if idx < TaskId::Num as usize {
-            self.tasks[idx] = None;
-        }
-        debug!("Watchdog - deregistered task: {}", task_id);
-    }
-
-    /// Feed the watchdog from a specific task
-    pub fn feed(&mut self, task_id: TaskId) {
-        let idx = task_id as usize;
-        if idx < TaskId::Num as usize {
-            if let Some(task) = &mut self.tasks[idx] {
-                task.feed();
-            } else {
-                info!("Attempt to feed unregistered task: {:?}", task_id);
-            }
-        }
-    }
-
-    pub fn start(&mut self) {
-        // Feed all of the registered tasks
-        for task in self.tasks.iter_mut().flatten() {
-            task.feed();
-        }
-
-        // Start the hardware watchdog
-        self.hw_watchdog.start(WATCHDOG_TIMER);
-
-        info!("Hardware watchdog started");
-    }
-
-    fn trigger_reset(&mut self) -> ! {
-        warn!("Trigger reset");
-
-        // Brief pause to allow log to be produced
-        block_ms!(10);
-
-        // Reboot the device
-        self.hw_watchdog.trigger_reset();
-
-        // Failed to reset.  Try again, differently.
-        cortex_m::peripheral::SCB::sys_reset();
-    }
-
-    fn feed_hw_watchdog(&mut self) {
-        self.hw_watchdog.feed();
-    }
-}
+// from all of our tasks and objects.
+pub static WATCHDOG: StaticCell<WatchdogType> = StaticCell::new();
 
 /// The tasks which are policed by the watchdog.
-#[derive(Debug, Clone, Copy, defmt::Format)]
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum TaskId {
-    /// The main ProtcolHandler task,
+    /// The main [`ProtcolHandler`] task,
     ProtocolHandler = 0,
 
-    /// The StatusDisplay
+    /// The [`StatusDisplay`] task.
     Display,
 
-    /// The WiFi Control task.  The cyw43 WiFi task can't be policed by a
-    /// watchdog, as the WiFI runner() doesn't return
+    /// The Wi-Fi Control task.  The cyw43 Wi-Fi task can't be policed by a
+    /// watchdog, as the Wi-Fi `runner()` doesn't return
     WiFiControl,
 
     /// A spawned drive operation task (read or write)
@@ -154,152 +48,26 @@ pub enum TaskId {
     /// The is the number of tasks which are policed by the watchdog.
     Num,
 }
+impl Id for TaskId {}
+const NUM_TASK_IDS: usize = TaskId::Num as usize;
 
-#[derive(Debug, Clone)]
-pub struct Task {
-    /// The task name
-    id: TaskId,
+/// A helper function to create the watchdog.
+pub fn create_watchdog(p_watchdog: p_WATCHDOG) -> &'static mut WatchdogType {
+    // Create watchdog configuration
+    let config = WatchdogConfig {
+        hardware_timeout: WATCHDOG_HW_TIMEOUT,
+        check_interval: WATCHDOG_CHECK_INTERVAL,
+    };
 
-    /// The last time the task was fed
-    last_feed: Instant,
+    // Create and configure the watchdog runner
+    let watchdog = WatchdogRunner::new(p_watchdog, config);
 
-    /// Maximum duration between feeds
-    max_duration: Duration,
+    // Make watchdog static so it can be shared with tasks
+    WATCHDOG.init(watchdog)
 }
 
-impl Task {
-    /// Creates a new Task object for registration with the watchdog.
-    pub fn new(id: TaskId, max_duration: Duration) -> Self {
-        Self {
-            id,
-            last_feed: Instant::now(),
-            max_duration,
-        }
-    }
-
-    // Feed the task - this is driven by the task itself via the static
-    // WATCHDOG
-    fn feed(&mut self) {
-        self.last_feed = Instant::now();
-    }
-
-    // Test whether this task has starved the watchdog.
-    fn starved(&self) -> bool {
-        (Instant::now() - self.last_feed) > self.max_duration
-    }
-}
-
-/// The watchdog runner task.  This periodically checks that all tasks have
-/// feed the watchdog in the appropriate timeframe, and if not causes a reset.
+/// A task to run the watchdog.
 #[embassy_executor::task]
-pub async fn watchdog_task() -> ! {
-    let core = embassy_rp::pac::SIO.cpuid().read();
-    info!("Core{}: Watchdog task started", core);
-
-    // Start the watchdog
-    WATCHDOG.lock(|w| {
-        w.borrow_mut()
-            .as_mut()
-            .expect("Watchdog doesn't exist - can't start the watchdog")
-            .start();
-    });
-
-    loop {
-        // Get the watchdog object and see if any tasks have starved the watchdog
-        WATCHDOG.lock(|w| {
-            let mut watchdog = w.borrow_mut();
-            let watchdog = watchdog
-                .as_mut()
-                .expect("Watchdog doesn't exist - can't run the watchdog");
-
-            // See if any tasks have starved us.  If not, feed the hardware
-            // watchdog.  If there are no registered tasks, we will also feed
-            // the hardware watchdog.
-            let mut starved = false;
-            for task in watchdog.tasks.iter().flatten() {
-                if task.starved() {
-                    error!("Task {:?} has starved the watchdog", task.id);
-                    starved = true;
-                }
-            }
-
-            // Either feed the hardware watchdog, or trigger a reset
-            if !starved {
-                watchdog.feed_hw_watchdog();
-            } else {
-                // Trigger a reset
-                error!("Triggering hardware watchdog");
-                watchdog.trigger_reset();
-            }
-        });
-
-        // Pause to allow tasks to feed the watchdog.
-        Timer::after(WATCHDOG_LOOP_TIMER).await;
-    }
-}
-
-// Helper functions to prevent the task code from having to worry about locking
-// the mutex
-
-/// Called to perform a standard device reboot.  (Normally as in not entering
-/// BOOTSEL/DFU mode.)
-pub fn reboot_normal() -> ! {
-    warn!("Rebooting");
-
-    // Try rebooting using the watchdog
-    WATCHDOG.lock(|w| {
-        w.borrow_mut()
-            .as_mut()
-            .expect("Watchdog doesn't exist  - will try and reset another way")
-            .trigger_reset()
-    })
-}
-
-// Called to perform a reboot into BOOTSEL/DFU mode.
-pub fn reboot_dfu() -> ! {
-    #[cfg(feature = "pico")]
-    {
-        embassy_rp::rom_data::reset_to_usb_boot(0, 0);
-        #[allow(clippy::empty_loop)]
-        loop {}
-    }
-    #[cfg(feature = "pico2")]
-    {
-        // Doesn't appear to reboot the device in BOOTSEL mode, not sure why
-        const REBOOT_TYPE_BOOTSEL: u32 = 0x0002;
-        const NO_RETURN_ON_SUCCESS: u32 = 0x0100;
-        let _ = embassy_rp::rom_data::reboot(REBOOT_TYPE_BOOTSEL | NO_RETURN_ON_SUCCESS, 0, 0, 0);
-        #[allow(clippy::empty_loop)]
-        loop {}
-    }
-}
-
-/// helper function to feed the watchdog
-pub fn feed_watchdog(task_id: TaskId) {
-    WATCHDOG.lock(|w| {
-        w.borrow_mut()
-            .as_mut()
-            .expect("Watchdog doesn't exist - can't feed it")
-            .feed(task_id)
-    });
-}
-
-/// Helper function to register a task
-pub fn register_task(task_id: TaskId, max_duration: Duration) {
-    WATCHDOG.lock(|w| {
-        w.borrow_mut()
-            .as_mut()
-            .expect("Watchdog doesn't exist - can't register task")
-            .register_task(Task::new(task_id, max_duration));
-    });
-}
-
-/// Helper function to deregister a task
-pub fn deregister_task(task_id: TaskId) {
-    WATCHDOG.lock(|w| {
-        w.borrow_mut()
-            .as_mut()
-            .expect("Watchdog doesn't exist - can't deregister task")
-            .deregister_task(task_id);
-    });
+pub async fn watchdog_task(watchdog: &'static WatchdogType) -> ! {
+    watchdog_run(watchdog.create_task()).await
 }

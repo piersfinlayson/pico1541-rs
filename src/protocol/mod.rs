@@ -29,8 +29,8 @@ use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointIn;
 
 use driver::{
-    abort, clear_abort, driver_in_use, raw_read_task, raw_write_task, Driver, DriverError,
-    ProtocolDriver, DRIVER,
+    DRIVER, Driver, DriverError, ProtocolDriver, abort, clear_abort, driver_in_use, raw_read_task,
+    raw_write_task,
 };
 use iec::{IecBus, IecDriver, Line};
 use types::Direction;
@@ -40,11 +40,11 @@ use crate::constants::{
     PROTOCOL_WATCHDOG_TIMER, READ_DATA_CHANNEL_SIZE, TOTAL_GENERIC_GPIOS,
     USB_DATA_TRANSFER_WAIT_TIMER,
 };
-use crate::infra::display::{update_status, DisplayType};
-use crate::infra::gpio::{IecPinConfig, IeeePinConfig, GPIO};
-use crate::infra::watchdog::{feed_watchdog, register_task, TaskId};
-use crate::usb::transfer::{UsbDataTransfer, UsbTransferResponse, USB_DATA_TRANSFER};
+use crate::infra::display::{DisplayType, update_status};
+use crate::infra::gpio::{GPIO, IecPinConfig, IeeePinConfig};
+use crate::infra::watchdog::{TaskId, WatchdogType};
 use crate::usb::WRITE_EP;
+use crate::usb::transfer::{USB_DATA_TRANSFER, UsbDataTransfer, UsbTransferResponse};
 
 /// The PROTOCOL_ACTION static is a Signal that is used to communicate to the
 /// Protocol Handler that a protocol state change is requrested.  We use a
@@ -114,6 +114,9 @@ pub struct ProtocolHandler {
 
     // The GPIOs.
     gpios: [Option<Flex<'static>>; TOTAL_GENERIC_GPIOS],
+
+    // Watchdog
+    watchdog: &'static WatchdogType,
 }
 
 impl ProtocolHandler {
@@ -122,7 +125,11 @@ impl ProtocolHandler {
     /// The Bulk object retains the OUT (read) endpoint as this must be read
     /// from within the main Bulk future runner (which hands bulk OUT
     /// transfers).
-    pub async fn new(core: u32, write_ep: Endpoint<'static, USB, In>) -> Self {
+    pub async fn new(
+        core: u32,
+        write_ep: Endpoint<'static, USB, In>,
+        watchdog: &'static WatchdogType,
+    ) -> Self {
         // Get the GPIOs for all bus types
         let (gpios, iec_pins, ieee_pins) = Self::get_gpios().await;
 
@@ -135,6 +142,7 @@ impl ProtocolHandler {
             iec_pins,
             ieee_pins,
             gpios,
+            watchdog,
         }
     }
 
@@ -217,7 +225,7 @@ impl ProtocolHandler {
         let iec_bus = IecBus::new(clock_line, data_line, atn_line, reset_line, srq_line, dios);
 
         // Create the IEC driver
-        let iec_driver = IecDriver::new(iec_bus);
+        let iec_driver = IecDriver::new(iec_bus, self.watchdog);
 
         // Test for the IEEE-488 device and tape
         // TODO
@@ -405,9 +413,7 @@ impl ProtocolHandler {
             CommandType::Write => {
                 trace!(
                     "Host to WRITE {} bytes, protocol {}, {}",
-                    command.len,
-                    command.protocol,
-                    command.flags
+                    command.len, command.protocol, command.flags
                 );
 
                 if !command.protocol.supported() {
@@ -430,8 +436,12 @@ impl ProtocolHandler {
 
                 // Spawn the transfer
                 let spawner = Spawner::for_current_executor().await;
-                let result =
-                    spawner.spawn(raw_write_task(command.len, command.protocol, command.flags));
+                let result = spawner.spawn(raw_write_task(
+                    command.len,
+                    command.protocol,
+                    command.flags,
+                    self.watchdog,
+                ));
 
                 if let Err(e) = result {
                     // Failed to spawn the raw_write task - clear down
@@ -450,8 +460,7 @@ impl ProtocolHandler {
             CommandType::Read => {
                 trace!(
                     "Host to READ {} bytes, protocol {}",
-                    command.len,
-                    command.protocol
+                    command.len, command.protocol
                 );
 
                 if !command.protocol.supported() {
@@ -468,7 +477,8 @@ impl ProtocolHandler {
 
                 // Spawn the transfer
                 let spawner = Spawner::for_current_executor().await;
-                let result = spawner.spawn(raw_read_task(command.protocol, command.len));
+                let result =
+                    spawner.spawn(raw_read_task(command.protocol, command.len, self.watchdog));
 
                 if let Err(e) = result {
                     // Failed to spawn the raw_read task - clear down.  Not
@@ -542,8 +552,7 @@ impl ProtocolHandler {
                 let release = command.bytes[2];
                 trace!(
                     "IEC Set/Release - set: 0x{:02x}, release: 0x{:02x}",
-                    set,
-                    release
+                    set, release
                 );
                 DRIVER
                     .lock()
@@ -888,7 +897,7 @@ impl ProtocolHandler {
 }
 
 #[embassy_executor::task]
-pub async fn protocol_handler_task() -> ! {
+pub async fn protocol_handler_task(watchdog: &'static WatchdogType) -> ! {
     // Read the core ID.  Tasks are allocated to cores at compile time with
     // embassy, so we only need to do this once and store in ProtocolHandler.
     let core = embassy_rp::pac::SIO.cpuid().read();
@@ -900,10 +909,11 @@ pub async fn protocol_handler_task() -> ! {
         .await
         .take()
         .expect("Write endpoint not created");
-    let mut protocol_handler = ProtocolHandler::new(core, write_ep).await;
+    let mut protocol_handler = ProtocolHandler::new(core, write_ep, watchdog).await;
 
     // Register with the watchdog
-    register_task(TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER);
+    let id = TaskId::ProtocolHandler;
+    watchdog.register_task(&id, PROTOCOL_WATCHDOG_TIMER).await;
 
     // We don't want to perform a full ProtocolHandler initialize at this
     // stage, as otherwise, when the user sends an Init control request we'll
@@ -923,7 +933,7 @@ pub async fn protocol_handler_task() -> ! {
         }
 
         // Feed the watchdog
-        feed_watchdog(TaskId::ProtocolHandler);
+        watchdog.feed(&id).await;
 
         // Perform any actions that are waiting.
         protocol_handler.perform_action().await;

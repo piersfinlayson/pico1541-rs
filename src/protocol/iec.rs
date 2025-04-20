@@ -8,7 +8,7 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{Flex, Pull};
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 
 use super::driver::{DriverError, ProtocolDriver};
 use super::{Dio, ProtocolFlags, ProtocolType};
@@ -16,7 +16,7 @@ use super::{Dio, ProtocolFlags, ProtocolType};
 use crate::constants::{
     PROTOCOL_YIELD_TIMER, PROTOCOL_YIELD_TIMER_US, USB_DATA_TRANSFER_WAIT_TIMER,
 };
-use crate::infra::watchdog::{feed_watchdog, TaskId};
+use crate::infra::watchdog::{TaskId, WatchdogType};
 use crate::usb::transfer::UsbDataTransfer;
 use crate::util::time::iec::{
     BUS_FREE_CHECK_YIELD, BUS_FREE_TIMEOUT, FOREVER_TIMEOUT, LISTENER_WAIT_INTERVAL,
@@ -370,6 +370,7 @@ pub struct IecDriver {
     pub saved_nib_bytes: [u8; 4],
     pub current_nib_write: usize,
     pub cmd_idx: usize,
+    watchdog: &'static WatchdogType,
 }
 
 impl ProtocolDriver for IecDriver {
@@ -418,9 +419,7 @@ impl ProtocolDriver for IecDriver {
     ) -> Result<u16, (DriverError, u16)> {
         trace!(
             "Raw Write: Protocol: {}, {}, {} bytes requested",
-            protocol,
-            flags,
-            len
+            protocol, flags, len
         );
 
         // Call the main read() function, which handles all supported
@@ -511,7 +510,7 @@ impl ProtocolDriver for IecDriver {
 
 // Various other functions
 impl IecDriver {
-    pub fn new(bus: IecBus) -> Self {
+    pub fn new(bus: IecBus, watchdog: &'static WatchdogType) -> Self {
         Self {
             bus,
             eoi: false,
@@ -519,12 +518,8 @@ impl IecDriver {
             saved_nib_bytes: [0; 4],
             current_nib_write: 0,
             cmd_idx: 0,
+            watchdog,
         }
-    }
-
-    #[inline(always)]
-    pub fn feed_watchdog() {
-        feed_watchdog(TaskId::DriveOperation);
     }
 
     /// Get supress_nib_command status
@@ -557,6 +552,14 @@ impl IecDriver {
         self.bus.retrieve_dios()
     }
 
+    pub async fn feed_watchdog(&self) {
+        self.watchdog.feed(&TaskId::DriveOperation).await;
+    }
+
+    pub async fn feed_watchdog_protocol_handler(&self) {
+        self.watchdog.feed(&TaskId::ProtocolHandler).await;
+    }
+
     /// Wait for listener to release DATA line
     ///
     /// Timing is not critical here so use yield.
@@ -574,7 +577,7 @@ impl IecDriver {
                 return false;
             }
             yield_for!(LISTENER_WAIT_INTERVAL);
-            Self::feed_watchdog();
+            self.feed_watchdog().await;
         }
 
         true
@@ -635,10 +638,10 @@ impl IecDriver {
                     // We were called from wait(), which is called from the
                     // ProtocolHandler context, so feed the watchdog
                     // appropriately.
-                    feed_watchdog(TaskId::ProtocolHandler);
+                    self.feed_watchdog_protocol_handler().await;
                 } else {
                     // We were called from the DriveOperation context.
-                    Self::feed_watchdog();
+                    self.feed_watchdog().await;
                 }
             }
 
@@ -663,31 +666,31 @@ impl IecDriver {
         }
     }
 
+    async fn check_bus_until_free(&mut self) -> Result<(), DriverError> {
+        loop {
+            // Check if bus is free
+            if self.check_if_bus_free().await {
+                return Ok(());
+            }
+
+            // Check if we should cancel
+            if self.check_abort() {
+                info!("Aborted waiting for free bus");
+                return Err(DriverError::Abort);
+            }
+
+            // Wait so we don't tight loop
+            yield_for!(BUS_FREE_CHECK_YIELD);
+
+            // Feed the bus
+            self.feed_watchdog().await;
+        }
+    }
+
     /// Wait for the bus to be free
     ///
     /// Timing is not criticial here, so we use yield.
     async fn wait_for_free_bus(&mut self, forever: bool) -> Result<(), DriverError> {
-        async fn check_bus_until_free(device: &mut IecDriver) -> Result<(), DriverError> {
-            loop {
-                // Check if bus is free
-                if device.check_if_bus_free().await {
-                    return Ok(());
-                }
-
-                // Check if we should cancel
-                if device.check_abort() {
-                    info!("Aborted waiting for free bus");
-                    return Err(DriverError::Abort);
-                }
-
-                // Wait so we don't tight loop
-                yield_for!(BUS_FREE_CHECK_YIELD);
-
-                // Feed the bus
-                IecDriver::feed_watchdog();
-            }
-        }
-
         // Figure out the time to wait
         let timeout = if forever {
             FOREVER_TIMEOUT
@@ -696,7 +699,7 @@ impl IecDriver {
         };
 
         // Wait for the the bus to be free with a timeout
-        match with_timeout(timeout, check_bus_until_free(self)).await {
+        match with_timeout(timeout, self.check_bus_until_free()).await {
             Ok(result) => result,
             Err(_timeout_error) => {
                 debug!("Timed out waiting for the bus to be free (expected if no drive");
@@ -795,7 +798,7 @@ impl IecDriver {
                 break Ok(());
             }
 
-            Self::feed_watchdog();
+            self.feed_watchdog().await;
 
             Timer::after(PROTOCOL_YIELD_TIMER).await;
 

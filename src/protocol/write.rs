@@ -9,10 +9,10 @@
 use defmt::{debug, error, info, trace, warn};
 use static_assertions::const_assert;
 
-use super::driver::{DriverError, ProtocolDriver};
-use super::iec::{IecDriver, IO_ATN, IO_CLK, IO_DATA, IO_RESET, IO_SRQ};
 use super::ProtocolFlags;
 use super::ProtocolType;
+use super::driver::{DriverError, ProtocolDriver};
+use super::iec::{IO_ATN, IO_CLK, IO_DATA, IO_RESET, IO_SRQ, IecDriver};
 
 use crate::constants::MAX_EP_PACKET_SIZE_USIZE;
 use crate::usb::transfer::UsbDataTransfer;
@@ -57,7 +57,7 @@ impl IecDriver {
     ) -> Result<u16, (DriverError, u16)> {
         // Wait for there to be bytes waiting to be written before starting.
         UsbDataTransfer::lock_wait_outstanding().await;
-        Self::feed_watchdog();
+        self.feed_watchdog().await;
 
         // Do protocol specific startup routine.  Propogate any error, as we
         // don't need to terminate (startup_write() must do any clean-up).
@@ -76,7 +76,7 @@ impl IecDriver {
         let term_result = self.terminate_write(loop_result, protocol, flags).await;
 
         // Feed the watchdog, as belt and braces in case it's been a while.
-        Self::feed_watchdog();
+        self.feed_watchdog().await;
 
         term_result
     }

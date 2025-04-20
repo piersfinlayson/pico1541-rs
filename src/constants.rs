@@ -17,11 +17,11 @@ use static_assertions::const_assert;
 
 /// Watchdog timer - the watchdog resets the system if it isn't feed at
 /// least this frequently.
-pub const WATCHDOG_TIMER: Duration = Duration::from_secs(1);
+pub const WATCHDOG_HW_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How often the runner threads aim to feed the watchdog timer so it doesn't
 /// reset the device.
-pub const WATCHDOG_LOOP_TIMER: Duration = Duration::from_millis(100);
+pub const WATCHDOG_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// How often the protocol handler task must feed the watchdog to prevent a
 /// reset.

@@ -27,6 +27,7 @@ use control::Control;
 use crate::constants::{
     MAX_EP_PACKET_SIZE, MAX_PACKET_SIZE_0, USB_CLASS, USB_POWER_MA, USB_PROTOCOL, USB_SUB_CLASS,
 };
+use crate::infra::watchdog::WatchdogType;
 use crate::util::dev_info::{IN_EP, MANUFACTURER, OUT_EP, PRODUCT, PRODUCT_ID, VENDOR_ID};
 
 // Bind the hardware USB interrupt to the USB stack.  Interrupts are the
@@ -77,6 +78,7 @@ impl UsbStack {
     pub async fn create_static(
         p_usb: USB,
         serial: &'static str,
+        watchdog: &'static WatchdogType,
     ) -> &'static mut UsbDevice<'static, RpUsbDriver<'static, USB>> {
         // Create a new USB device
         let mut driver = RpUsbDriver::new(p_usb, Irqs);
@@ -152,7 +154,7 @@ impl UsbStack {
 
         // Create a handler for USB events and set it using builder.  We make
         // it static to avoid lifetime issues.
-        let handler = Control::create_static(if_num);
+        let handler = Control::create_static(if_num, watchdog);
         builder.handler(handler);
 
         // Build the UsbDevice and store it as a Static so we can spawn a task

@@ -12,7 +12,7 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
 fi
 
 # Get arguments
-BIN=$1
+MODE=$1
 BOARD=$2
 BUILD_TYPE=$3
 
@@ -25,7 +25,7 @@ if [[ "$BUILD_TYPE" == "release" ]]; then
 fi
 
 # Validate arguments
-validate_args "$BIN" "$BOARD"
+validate_args "$MODE" "$BOARD"
 
 # Validate build type
 validate_build_type "$BUILD_TYPE" || exit 1
@@ -34,11 +34,11 @@ validate_build_type "$BUILD_TYPE" || exit 1
 TARGET=$(get_target "$BOARD")
 
 # Print run information
-echo "Running $BIN for $BOARD (target: $TARGET)"
+echo "Running $MODE for $BOARD (target: $TARGET)"
 
 # Execute cargo run with the appropriate parameters
 set -x
-cargo run --bin "$BIN" --features "$BIN,$BOARD" --target "$TARGET" $RELEASE_FLAG
+cargo run --bin pico1541 --features "$MODE,$BOARD" --target "$TARGET" $RELEASE_FLAG
 RUN_EXIT_CODE=$?
 set +x
 

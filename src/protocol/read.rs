@@ -9,9 +9,9 @@
 use defmt::{debug, error, info, trace, warn};
 use static_assertions::const_assert;
 
-use super::driver::{DriverError, ProtocolDriver};
-use super::iec::{IecDriver, IO_ATN, IO_CLK, IO_DATA, IO_SRQ};
 use super::ProtocolType;
+use super::driver::{DriverError, ProtocolDriver};
+use super::iec::{IO_ATN, IO_CLK, IO_DATA, IO_SRQ, IecDriver};
 
 use crate::constants::MAX_EP_PACKET_SIZE_USIZE;
 use crate::usb::transfer::UsbDataTransfer;
@@ -91,7 +91,7 @@ impl IecDriver {
         // of space, but we'll wait for enough space for an entire USB packet
         // as the buffer should be twice that size.
         UsbDataTransfer::lock_wait_space_available(MAX_EP_PACKET_SIZE_USIZE).await;
-        Self::feed_watchdog();
+        self.feed_watchdog().await;
 
         // Get any options for this operation.
         let option = Self::get_read_option(len, protocol);
@@ -107,7 +107,7 @@ impl IecDriver {
         self.terminate_read(protocol, option);
 
         // Feed the watchdog, as belt and braces in case it's been a while.
-        Self::feed_watchdog();
+        self.feed_watchdog().await;
 
         loop_result
     }

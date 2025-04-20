@@ -12,9 +12,9 @@ use defmt::{debug, error, info, trace, warn};
 use embassy_rp::gpio::{AnyPin, Flex};
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{
-    PIN_0, PIN_1, PIN_10, PIN_11, PIN_12, PIN_13, PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PIN_19,
-    PIN_2, PIN_20, PIN_21, PIN_22, PIN_23, PIN_24, PIN_25, PIN_26, PIN_27, PIN_28, PIN_29, PIN_3,
-    PIN_4, PIN_5, PIN_6, PIN_7, PIN_8, PIN_9,
+    PIN_0, PIN_1, PIN_2, PIN_3, PIN_4, PIN_5, PIN_6, PIN_7, PIN_8, PIN_9, PIN_10, PIN_11, PIN_12,
+    PIN_13, PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PIN_19, PIN_20, PIN_21, PIN_22, PIN_23, PIN_24,
+    PIN_25, PIN_26, PIN_27, PIN_28, PIN_29,
 };
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -34,7 +34,7 @@ pub mod config {
     #![allow(dead_code)]
     use crate::constants::{WIFI_CLK_PIN, WIFI_CS_PIN, WIFI_DIO_PIN, WIFI_PWR_PIN};
 
-    use super::*;
+    use super::{IecPinConfig, IeeePinConfig, PinConfig, WiFiPinConfig};
 
     /// Configuration for v0.1 board
     pub fn standard_v0_1() -> PinConfig {
@@ -232,6 +232,7 @@ pub struct Gpio {
 impl Gpio {
     // Create a new instance of the Gpio object and create the GPIO static.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::similar_names)]
     pub async fn create_static(
         pin0: PIN_0,
         pin1: PIN_1,
@@ -305,6 +306,7 @@ impl Gpio {
         {
             // Put the gpio object into the GPIO static.
             let mut g = GPIO.lock().await;
+            #[allow(clippy::manual_assert)]
             if g.is_some() {
                 panic!("GPIO static already set");
             }
@@ -333,7 +335,7 @@ impl Gpio {
         self.config.ieee_pins.clone()
     }
 
-    /// Get the WiFi pins
+    /// Get the Wi-Fi pins
     pub fn get_wifi_pins(&self) -> Option<WiFiPinConfig> {
         self.config.wifi_pins.clone()
     }

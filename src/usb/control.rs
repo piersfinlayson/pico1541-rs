@@ -16,21 +16,21 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 
+use embassy_usb::Handler;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use embassy_usb::types::InterfaceNumber;
-use embassy_usb::Handler;
 use static_cell::StaticCell;
 
 use crate::constants::FIRMWARE_VERSION;
 use crate::constants::{
     ECHO_CONTROL_RESPONSE_LEN, INIT_CONTROL_RESPONSE_LEN, MAX_XUM_DEVINFO_SIZE_USIZE,
 };
-use crate::infra::display::{update_status, DisplayType};
-use crate::infra::watchdog::reboot_dfu;
+use crate::infra::display::{DisplayType, update_status};
+use crate::infra::watchdog::WatchdogType;
 use crate::protocol::types::{Capabilities, Direction, InitStatus};
 use crate::protocol::{
-    get_ieee_present, get_protocol_init, get_tape_present, set_protocol_action,
-    take_protocol_action, ProtocolAction,
+    ProtocolAction, get_ieee_present, get_protocol_init, get_tape_present, set_protocol_action,
+    take_protocol_action,
 };
 use crate::util::built::{GIT_VERSION, PKG_VERSION, RUSTC_VERSION};
 
@@ -46,6 +46,9 @@ pub struct Control {
     // The interface number of this control handler.  Used to check that we
     // only handle requests for this interface.
     if_num: InterfaceNumber,
+
+    // Watchdog
+    _watchdog: &'static WatchdogType,
 }
 
 // Error type used internally to decide how to respond to a Control message.
@@ -162,16 +165,24 @@ impl Handler for Control {
 impl Control {
     // Create a new instance of this control handler.  Stores the created
     // instance in the static.  Will panic if this is called more than once.
-    pub fn create_static(if_num: InterfaceNumber) -> &'static mut Self {
-        let control = Self { if_num };
+    pub fn create_static(
+        if_num: InterfaceNumber,
+        watchdog: &'static WatchdogType,
+    ) -> &'static mut Self {
+        let control = Self {
+            if_num,
+            _watchdog: watchdog,
+        };
         CONTROL.init(control)
     }
 
     // Check the request is valid and supported.
     fn check_request(&self, req: Request, dir: Direction) -> Result<ControlRequest, ControlError> {
         // Trace the request.
-        trace!("Control request to interface: 0x{:02x}, request: {:#x}, request type: {}, recipient: {}, direction: {}",
-            req.index, req.request, req.request_type, req.recipient, dir);
+        trace!(
+            "Control request to interface: 0x{:02x}, request: {:#x}, request type: {}, recipient: {}, direction: {}",
+            req.index, req.request, req.request_type, req.recipient, dir
+        );
 
         // Only handle Class request types to an Interface.
         if req.request_type != RequestType::Class || req.recipient != Recipient::Device {
@@ -440,5 +451,24 @@ impl defmt::Format for ControlRequest {
             ControlRequest::RustcVer => defmt::write!(f, "RustcVer"),
             ControlRequest::PkgVer => defmt::write!(f, "PkgVer"),
         }
+    }
+}
+
+// Called to perform a reboot into BOOTSEL/DFU mode.
+fn reboot_dfu() -> ! {
+    #[cfg(feature = "pico")]
+    {
+        embassy_rp::rom_data::reset_to_usb_boot(0, 0);
+        #[allow(clippy::empty_loop)]
+        loop {}
+    }
+    #[cfg(feature = "pico2")]
+    {
+        // Doesn't appear to reboot the device in BOOTSEL mode, not sure why
+        const REBOOT_TYPE_BOOTSEL: u32 = 0x0002;
+        const NO_RETURN_ON_SUCCESS: u32 = 0x0100;
+        let _ = embassy_rp::rom_data::reboot(REBOOT_TYPE_BOOTSEL | NO_RETURN_ON_SUCCESS, 0, 0, 0);
+        #[allow(clippy::empty_loop)]
+        loop {}
     }
 }

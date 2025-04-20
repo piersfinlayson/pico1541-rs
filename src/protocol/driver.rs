@@ -1,4 +1,4 @@
-//! This file defines the ProtocolDriver trait, which is implemented by the
+//! This file defines the [`ProtocolDriver`] trait, which is implemented by the
 //! various Commodore protocol implementations.  This is based on the xum1541
 //! source code.
 
@@ -14,7 +14,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::Duration;
 
 use crate::constants::DRIVE_OPERATION_WATCHDOG_TIMER;
-use crate::infra::watchdog::{deregister_task, register_task, TaskId};
+use crate::infra::watchdog::{TaskId, WatchdogType};
 use crate::protocol::iec::IecDriver;
 use crate::protocol::ieee::IeeeDriver;
 use crate::protocol::tape::TapeDriver;
@@ -31,12 +31,12 @@ pub static DRIVER: Mutex<ThreadModeRawMutex, Option<Driver>> = Mutex::new(None);
 // Static used to signal to a driver task whether it should abort.
 pub static ABORT_DRIVER_TASK: AtomicBool = AtomicBool::new(false);
 
-/// Defines errors for ProtocolDriver implementations.
+/// Defines errors for [`ProtocolDriver`] implementations.
 #[allow(dead_code)]
 #[derive(defmt::Format, Debug)]
 pub enum DriverError {
     // Errors which are signalled back to the host with a successful status
-    /// IoError
+    /// An I/O error occurred
     Io,
     /// Device timeout - no response within expected time
     Timeout,
@@ -163,6 +163,7 @@ pub trait ProtocolDriver {
     fn clear_eoi(&mut self);
 
     /// Checks whether the task should abort
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn check_abort(&self) -> bool {
         let abort = check_abort();
@@ -305,11 +306,18 @@ impl Driver {
 /// so that the spawner can be sure, once response is set, that this task is
 /// done, and hence the driver is unlocked.
 #[embassy_executor::task]
-pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFlags) {
+pub async fn raw_write_task(
+    len: u16,
+    protocol: ProtocolType,
+    flags: ProtocolFlags,
+    watchdog: &'static WatchdogType,
+) {
     trace!("Driver write task started");
 
     // Register this task with the watchdog
-    register_task(TaskId::DriveOperation, DRIVE_OPERATION_WATCHDOG_TIMER);
+    watchdog
+        .register_task(&TaskId::DriveOperation, DRIVE_OPERATION_WATCHDOG_TIMER)
+        .await;
 
     // Lock the driver and spawn the task
     let response = {
@@ -318,31 +326,28 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
         clear_abort();
         let guard = guard.as_mut();
 
-        match guard {
-            Some(guard) => {
-                // Call raw_write and set the response appropriately.
-                let result = guard.raw_write(len, protocol, flags).await;
-                match result {
-                    Ok(count) => {
-                        trace!("Driver write task completed OK: wrote {} bytes", count);
-                        UsbTransferResponse::Ok(count)
-                    }
-                    Err((e, count)) => {
-                        info!(
-                            "Driver write task completed with error: {}, wrote {} bytes",
-                            e, count
-                        );
-                        e.into_usb_transfer_response(count)
-                    }
+        if let Some(guard) = guard {
+            // Call raw_write and set the response appropriately.
+            let result = guard.raw_write(len, protocol, flags).await;
+            match result {
+                Ok(count) => {
+                    trace!("Driver write task completed OK: wrote {} bytes", count);
+                    UsbTransferResponse::Ok(count)
+                }
+                Err((e, count)) => {
+                    info!(
+                        "Driver write task completed with error: {}, wrote {} bytes",
+                        e, count
+                    );
+                    e.into_usb_transfer_response(count)
                 }
             }
-            None => {
-                warn!("No driver available for write task");
-                UsbTransferResponse::Error
-            }
+        } else {
+            warn!("No driver available for write task");
+            UsbTransferResponse::Error
         }
+        // Driver is unlocked here.
     };
-    // Driver is unlocked here.
 
     UsbDataTransfer::lock_set_response(response).await;
 
@@ -352,7 +357,7 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
     }
 
     // Deregister this task with the watchdog
-    deregister_task(TaskId::DriveOperation);
+    watchdog.deregister_task(&TaskId::DriveOperation).await;
 
     trace!("Driver write task exiting");
 }
@@ -366,11 +371,13 @@ pub async fn raw_write_task(len: u16, protocol: ProtocolType, flags: ProtocolFla
 /// so that the spawner can be sure, once response is set, that this task is
 /// done, and hence the driver is unlocked.
 #[embassy_executor::task]
-pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
+pub async fn raw_read_task(protocol: ProtocolType, len: u16, watchdog: &'static WatchdogType) {
     trace!("Driver read task started");
 
     // Register this task with the watchdog
-    register_task(TaskId::DriveOperation, DRIVE_OPERATION_WATCHDOG_TIMER);
+    watchdog
+        .register_task(&TaskId::DriveOperation, DRIVE_OPERATION_WATCHDOG_TIMER)
+        .await;
 
     // Lock the driver and spawn the task
     let response = {
@@ -379,29 +386,26 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
         clear_abort();
         let guard = guard.as_mut();
 
-        match guard {
-            Some(guard) => {
-                // Call raw_read and set the response appropriately.
-                let result = guard.raw_read(len, protocol).await;
+        if let Some(guard) = guard {
+            // Call raw_read and set the response appropriately.
+            let result = guard.raw_read(len, protocol).await;
 
-                match result {
-                    Ok(count) => {
-                        trace!("Driver read task completed OK: read {} bytes", count);
-                        UsbTransferResponse::Ok(count)
-                    }
-                    Err((e, count)) => {
-                        info!(
-                            "Driver read task completed with error: {}, wrote {} bytes",
-                            e, count
-                        );
-                        e.into_usb_transfer_response(count)
-                    }
+            match result {
+                Ok(count) => {
+                    trace!("Driver read task completed OK: read {} bytes", count);
+                    UsbTransferResponse::Ok(count)
+                }
+                Err((e, count)) => {
+                    info!(
+                        "Driver read task completed with error: {}, wrote {} bytes",
+                        e, count
+                    );
+                    e.into_usb_transfer_response(count)
                 }
             }
-            None => {
-                warn!("No driver available for read task");
-                UsbTransferResponse::Error
-            }
+        } else {
+            warn!("No driver available for read task");
+            UsbTransferResponse::Error
         }
     };
     // Driver is unlocked here.
@@ -414,33 +418,32 @@ pub async fn raw_read_task(protocol: ProtocolType, len: u16) {
     }
 
     // Deregister this task with the watchdog
-    deregister_task(TaskId::DriveOperation);
+    watchdog.deregister_task(&TaskId::DriveOperation).await;
 
     trace!("Driver read task exiting");
 }
 
 /// Helper function to abort the driver task.
-#[inline(always)]
 pub fn abort() {
     trace!("Aborting driver task");
     ABORT_DRIVER_TASK.store(true, Ordering::SeqCst);
 }
 
 /// Helper function to clear the driver task abort.
-#[inline(always)]
 pub fn clear_abort() {
     trace!("Deasserting driver task abort");
     ABORT_DRIVER_TASK.store(false, Ordering::SeqCst);
 }
 
-/// Helper function to check if the driver task should abort.
+/// Helper function to check if the driver task should abort.  We inline
+/// this as we call it a lot from within our protocol handling.
+#[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn check_abort() -> bool {
     ABORT_DRIVER_TASK.load(Ordering::Relaxed)
 }
 
 /// Helper function to check if the driver is currently in use.
-#[inline(always)]
 pub fn driver_in_use() -> bool {
     DRIVER.try_lock().map_or(true, |d| {
         drop(d);

@@ -81,11 +81,13 @@ macro_rules! block_us {
 pub(crate) use block_us;
 
 /// Block for a specific number of milliseconds.
+#[allow(unused_macros)]
 macro_rules! block_ms {
     ($ms:expr) => {
         crate::util::time::block_for(embassy_time::Duration::from_millis($ms))
     };
 }
+#[allow(unused_imports)]
 pub(crate) use block_ms;
 
 /// Macro to briefly delay in order to let the bus lines settle.
