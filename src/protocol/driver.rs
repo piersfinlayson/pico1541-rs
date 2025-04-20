@@ -33,7 +33,7 @@ pub static ABORT_DRIVER_TASK: AtomicBool = AtomicBool::new(false);
 
 /// Defines errors for [`ProtocolDriver`] implementations.
 #[allow(dead_code)]
-#[derive(defmt::Format, Debug)]
+#[derive(defmt::Format, Debug, PartialEq)]
 pub enum DriverError {
     // Errors which are signalled back to the host with a successful status
     /// An I/O error occurred

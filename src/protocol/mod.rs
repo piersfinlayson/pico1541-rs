@@ -46,9 +46,9 @@ use crate::infra::watchdog::{TaskId, WatchdogType};
 use crate::usb::WRITE_EP;
 use crate::usb::transfer::{USB_DATA_TRANSFER, UsbDataTransfer, UsbTransferResponse};
 
-/// The PROTOCOL_ACTION static is a Signal that is used to communicate to the
+/// The `PROTOCOL_ACTION` static is a Signal that is used to communicate to the
 /// Protocol Handler that a protocol state change is requrested.  We use a
-/// CriticalSectionRawMutex Signal because the Protocol Handler and Control
+/// `CriticalSectionRawMutex` Signal because the Protocol Handler and Control
 /// Handler (which sends signals) run on different cores.
 pub static PROTOCOL_ACTION: Signal<CriticalSectionRawMutex, ProtocolAction> = Signal::new();
 
@@ -72,7 +72,7 @@ pub static WRITE_DATA_CHANNEL: Channel<
     READ_DATA_CHANNEL_SIZE,
 > = Channel::new();
 
-/// ProtocolAction is used to flag to the ProtocolHandler that there is a
+/// `ProtocolAction` is used to flag to the `ProtocolHandler` that there is a
 /// state change requested.  This is driven by the Control handler based on
 /// Control transfers.
 #[derive(PartialEq, Clone)]
@@ -93,11 +93,11 @@ impl defmt::Format for ProtocolAction {
     }
 }
 
-/// ProtocolHandler handles requests that come in via bulk transfers on the
+/// `ProtocolHandler` handles requests that come in via bulk transfers on the
 /// OUT endpoint.
 ///
 /// It is initialized, uninitialized and reset via control requests, and these
-/// are signalled via ProtocolAction.
+/// are signalled via `ProtocolAction`.
 #[allow(dead_code)]
 pub struct ProtocolHandler {
     // The IN endpoint to use to send status responses and READ data.
@@ -120,7 +120,7 @@ pub struct ProtocolHandler {
 }
 
 impl ProtocolHandler {
-    /// Create a new ProtocolHandler instance.  Takes an IN (write) endpoint
+    /// Create a new `ProtocolHandler` instance.  Takes an IN (write) endpoint
     /// as argument, so it can send responses directly to the IN endpoint.
     /// The Bulk object retains the OUT (read) endpoint as this must be read
     /// from within the main Bulk future runner (which hands bulk OUT
@@ -246,7 +246,7 @@ impl ProtocolHandler {
                     self.gpios[output_pin_num as usize] = output_pin;
                 }
 
-                for dio in iec.retrieve_dios().iter_mut() {
+                for dio in &mut iec.retrieve_dios() {
                     let pin_num = dio.pin_num;
                     let pin = dio.pin.take().expect("Missing DIO pin");
                     self.gpios[pin_num as usize] = Some(pin);
@@ -302,12 +302,8 @@ impl ProtocolHandler {
     pub async fn perform_action(&mut self) {
         // Check whether there's an action from Control to perform.  This also
         // removes it from the PROTOCOL_ACTION signal.
-        let action = match PROTOCOL_ACTION.try_take() {
-            Some(action) => action,
-            None => {
-                // No action to perform
-                return;
-            }
+        let Some(action) = PROTOCOL_ACTION.try_take() else {
+            return;
         };
 
         // If there is one, perform it.
@@ -381,18 +377,16 @@ impl ProtocolHandler {
 
     // Handles a new command, by creating the appropriate transfer and, in
     // the case of an OUT/write command, sending a response if it fails
+    #[allow(clippy::too_many_lines)]
     async fn handle_new_command(&mut self, data: &[u8], len: u16) {
         update_status(DisplayType::Active);
 
         // Parse the command and get a new Command object.  We handle errors
         // by dropping the request.
-        let command = match Command::new(data, len) {
-            Ok(command) => command,
-            Err(_) => {
-                warn!("Failed to parse command - drop it");
-                update_status(DisplayType::Error);
-                return;
-            }
+        let Ok(command) = Command::new(data, len) else {
+            warn!("Failed to parse command - drop it");
+            update_status(DisplayType::Error);
+            return;
         };
 
         info!(
@@ -493,10 +487,7 @@ impl ProtocolHandler {
                 trace!("Get EOI");
                 let value = DRIVER.lock().await.as_ref().unwrap().get_eoi();
                 debug!("Get EOI response: {}", value);
-                let value = match value {
-                    true => 1,
-                    false => 0,
-                };
+                let value = u16::from(value);
                 self.send_status(Status {
                     code: StatusCode::Ok,
                     value,
@@ -524,7 +515,7 @@ impl ProtocolHandler {
                     .wait(line, state, None)
                     .await
                 {
-                    Ok(_) => {
+                    Ok(()) => {
                         debug!("IEC Wait - success");
                         self.send_status(Status {
                             code: StatusCode::Ok,
@@ -543,7 +534,7 @@ impl ProtocolHandler {
                 debug!("IEC Poll response: 0x{:02x}", value);
                 self.send_status(Status {
                     code: StatusCode::Ok,
-                    value: value as u16,
+                    value: u16::from(value),
                 })
                 .await;
             }
@@ -572,7 +563,7 @@ impl ProtocolHandler {
                 debug!("PP Read byte: 0x{:02x}", byte);
                 self.send_status(Status {
                     code: StatusCode::Ok,
-                    value: byte as u16,
+                    value: u16::from(byte),
                 })
                 .await;
             }
@@ -607,9 +598,8 @@ impl ProtocolHandler {
 
             if written >= (len as usize) {
                 break;
-            } else {
-                Timer::after(USB_DATA_TRANSFER_WAIT_TIMER).await;
             }
+            Timer::after(USB_DATA_TRANSFER_WAIT_TIMER).await;
         }
     }
 
@@ -663,14 +653,11 @@ impl ProtocolHandler {
 
         // Reset the bus
         if let Err(e) = guard.as_mut().unwrap().reset(false).await {
-            match e {
-                DriverError::Timeout => {
-                    debug!("Timeout reseting the bus - expected if no devices present");
-                }
-                _ => {
-                    warn!("Hit error reseting the bus {}", e);
-                    update_status(DisplayType::Error);
-                }
+            if e == DriverError::Timeout {
+                debug!("Timeout reseting the bus - expected if no devices present");
+            } else {
+                warn!("Hit error reseting the bus {}", e);
+                update_status(DisplayType::Error);
             }
         }
 
@@ -743,7 +730,9 @@ impl ProtocolHandler {
                     debug!("OUT transfer complete ({})", status.code);
 
                     // We only send a response on Cbm and Tape protocols
-                    let send_response = guard.protocol().is_some_and(|p| p.write_send_status());
+                    let send_response = guard
+                        .protocol()
+                        .is_some_and(ProtocolType::write_send_status);
 
                     if send_response {
                         // Send the response
@@ -793,40 +782,37 @@ impl ProtocolHandler {
 
                     let result = guard.try_get_next_bytes(&mut buffer[..bytes_to_send]);
 
-                    let size = match result {
-                        Some(size) => {
-                            // Send the bytes
-                            let result = self.write_ep.write(&buffer[..size]).await;
-                            match result {
-                                Ok(_) => {
-                                    // We sent the bytes
-                                    debug!("Successfully sent {} bytes", size);
+                    let size = if let Some(size) = result {
+                        // Send the bytes
+                        let result = self.write_ep.write(&buffer[..size]).await;
+                        match result {
+                            Ok(()) => {
+                                // We sent the bytes
+                                debug!("Successfully sent {} bytes", size);
 
-                                    // update the outstanding bytes count
-                                    outstanding_bytes -= size;
+                                // update the outstanding bytes count
+                                outstanding_bytes -= size;
 
-                                    // We sent this many bytes.
-                                    size
-                                }
-                                Err(e) => {
-                                    // Drop any remaining data
-                                    warn!("Failed to send IN data {}", e);
-                                    outstanding_bytes = 0;
+                                // We sent this many bytes.
+                                size
+                            }
+                            Err(e) => {
+                                // Drop any remaining data
+                                warn!("Failed to send IN data {}", e);
+                                outstanding_bytes = 0;
 
-                                    // Say we sent 0 bytes, in order to get
-                                    // ZLP sent.
-                                    0
-                                }
+                                // Say we sent 0 bytes, in order to get
+                                // ZLP sent.
+                                0
                             }
                         }
-                        None => {
-                            // Drop any remaining data
-                            warn!("Failed to get bytes to send");
-                            outstanding_bytes = 0;
+                    } else {
+                        // Drop any remaining data
+                        warn!("Failed to get bytes to send");
+                        outstanding_bytes = 0;
 
-                            // Say we sent 0 bytes in order to get ZLP sent.
-                            0
-                        }
+                        // Say we sent 0 bytes in order to get ZLP sent.
+                        0
                     };
 
                     if outstanding_bytes > 0 {
@@ -855,7 +841,7 @@ impl ProtocolHandler {
                             .write_ep
                             .write(&[])
                             .await
-                            .inspect(|_| debug!("ZLP sent"))
+                            .inspect(|()| debug!("ZLP sent"))
                             .inspect_err(|e| warn!("Failed to complete read with ZLP: {}", e));
                     }
 
@@ -870,22 +856,20 @@ impl ProtocolHandler {
     // process.
     async fn handle_out_data(&mut self) {
         // See if there's any data on Channel
-        match WRITE_DATA_CHANNEL.try_receive() {
-            Ok((size, data)) => {
-                trace!("Received data from channel: {:?}", data);
-                if size <= MAX_WRITE_SIZE_USIZE {
-                    // We got bulk data.  Handle it.
-                    self.received_data(&data, size as u16).await;
-                } else {
-                    info!(
-                        "Received more data than we can handle {} bytes - dropping",
-                        size
-                    );
-                }
+        if let Ok((size, data)) = WRITE_DATA_CHANNEL.try_receive() {
+            trace!("Received data from channel: {:?}", data);
+            if size <= MAX_WRITE_SIZE_USIZE {
+                // We got bulk data.  Handle it.
+                #[allow(clippy::cast_possible_truncation)]
+                self.received_data(&data, size as u16).await;
+            } else {
+                info!(
+                    "Received more data than we can handle {} bytes - dropping",
+                    size
+                );
             }
-            Err(_) => {
-                // No data
-            }
+        } else {
+            // No data
         }
     }
 
@@ -949,8 +933,8 @@ pub async fn protocol_handler_task(watchdog: &'static WatchdogType) -> ! {
     }
 }
 
-/// Helper function to get ProtocolHandler state - required by Control Handler
-/// to determine what to indicate in resonse to an Init command.
+/// Helper function to get `ProtocolHandler` state - required by Control
+/// Handler to determine what to indicate in resonse to an Init command.
 pub fn get_protocol_init() -> bool {
     PROTOCOL_INIT.load(Ordering::Relaxed)
 }
@@ -985,13 +969,13 @@ fn set_tape_present(value: bool) {
     TAPE_PRESENT.store(value, Ordering::Relaxed);
 }
 
-/// Helper function to signal to the ProtocolHandler that an action is
+/// Helper function to signal to the `ProtocolHandler` that an action is
 /// required.  This is used by the Control Handler.
 pub fn set_protocol_action(action: ProtocolAction) {
     PROTOCOL_ACTION.signal(action);
 }
 
-/// Helper function to retrieve a signal for the ProtocolHandler.  This is
+/// Helper function to retrieve a signal for the `ProtocolHandler`.  This is
 /// used internally, and by the Control Handler to retrieve an action.
 ///
 /// This takes the current signal, so a new signal must be set if required.
@@ -1104,6 +1088,7 @@ impl defmt::Format for CommandType {
 pub struct Command {
     // The type of command.  This is the first byte of the incoming command
     // packet.
+    #[allow(clippy::struct_field_names)]
     command: CommandType,
 
     // The protocol used by the command.  This is the second byte of the
@@ -1144,41 +1129,31 @@ impl Command {
         }
 
         // Get the command itself.
-        let command = match CommandType::try_from(bytes[0]) {
-            Ok(cmd) => cmd,
-            Err(_) => {
-                info!("Unsupported command: 0x{:02x}", bytes[0]);
-                return Err(());
-            }
+        let Ok(command) = CommandType::try_from(bytes[0]) else {
+            info!("Unsupported command: 0x{:02x}", bytes[0]);
+            return Err(());
         };
 
         // Check the protocol is supported (for Read and Write commands only).
         let protocol = if command == CommandType::Read || command == CommandType::Write {
-            match ProtocolType::try_from(bytes[1]) {
-                Ok(proto) => proto,
-                Err(_) => {
-                    info!("Unsupported protocol: 0x{:02x}", bytes[1]);
-                    return Err(());
-                }
-            }
+            ProtocolType::try_from(bytes[1]).map_err(|()| {
+                info!("Unsupported protocol: 0x{:02x}", bytes[1]);
+            })?
         } else {
             ProtocolType::None
         };
 
         // Check the flags are supported (for Read and Write Commands only).
         let flags = if command == CommandType::Read || command == CommandType::Write {
-            match ProtocolFlags::try_from(bytes[1]) {
-                Ok(flags) => {
-                    if flags.is_any() && protocol != ProtocolType::Cbm {
-                        return Err(());
-                    }
-                    flags
-                }
-                Err(_) => {
-                    info!("Unsupported flags: 0x{:02x}", bytes[1]);
-                    return Err(());
-                }
+            let flags = ProtocolFlags::try_from(bytes[1]).map_err(|()| {
+                info!("Unsupported flags: 0x{:02x}", bytes[1]);
+            })?;
+
+            if flags.is_any() && protocol != ProtocolType::Cbm {
+                return Err(());
             }
+
+            flags
         } else {
             ProtocolFlags::NONE
         };
@@ -1217,17 +1192,17 @@ pub enum ProtocolType {
 
 impl ProtocolType {
     /// Whether the Protocol is supported
-    fn supported(&self) -> bool {
+    fn supported(self) -> bool {
         matches!(self, Self::Cbm | Self::S1 | Self::S2 | Self::PP | Self::P2)
     }
 
-    fn write_send_status(&self) -> bool {
-        *self == Self::Cbm || *self == Self::Tap || *self == Self::TapConfig
+    fn write_send_status(self) -> bool {
+        self == Self::Cbm || self == Self::Tap || self == Self::TapConfig
     }
 }
 
-/// Implement TryFrom for ProtocolType in order to parse an incoming byte into
-/// a ProtocolType.
+/// Implement `TryFrom` for `ProtocolType` in order to parse an incoming byte
+/// into a `ProtocolType`.
 impl TryFrom<u8> for ProtocolType {
     type Error = ();
 
@@ -1265,24 +1240,24 @@ bitflags! {
 // Implement defmt::Format manually for ProtocolFlags
 impl defmt::Format for ProtocolFlags {
     fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "ProtocolFlags({})", self.bits())
+        defmt::write!(f, "ProtocolFlags({})", self.bits());
     }
 }
 
 impl ProtocolFlags {
-    pub fn is_none(&self) -> bool {
+    pub fn is_none(self) -> bool {
         self.is_empty()
     }
 
-    pub fn is_any(&self) -> bool {
+    pub fn is_any(self) -> bool {
         !self.is_none()
     }
 
-    pub fn is_talk(&self) -> bool {
+    pub fn is_talk(self) -> bool {
         self.contains(Self::CBM_TALK)
     }
 
-    pub fn is_atn(&self) -> bool {
+    pub fn is_atn(self) -> bool {
         self.contains(Self::CBM_ATN)
     }
 }
@@ -1336,7 +1311,7 @@ impl Status {
 
 impl defmt::Format for Status {
     fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "Status({:?}, 0x{:04x})", self.code, self.value)
+        defmt::write!(fmt, "Status({:?}, 0x{:04x})", self.code, self.value);
     }
 }
 
@@ -1346,19 +1321,22 @@ pub struct Dio {
 }
 
 impl Dio {
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set_output(&mut self, level: bool) {
         if let Some(pin) = &mut self.pin {
             pin.set_as_output();
-            match level {
-                true => pin.set_high(),
-                false => pin.set_low(),
+            if level {
+                pin.set_high();
+            } else {
+                pin.set_low();
             }
         } else {
             warn!("Pin {} not set", self.pin_num);
         }
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn read_pin(&mut self) -> bool {
         if let Some(pin) = &mut self.pin {
