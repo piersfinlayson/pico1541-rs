@@ -63,21 +63,19 @@ enum ControlError {
 impl Handler for Control {
     /// Called when the USB device has been enabled or disabled.
     fn enabled(&mut self, enabled: bool) {
-        match enabled {
-            true => {
-                trace!("USB device enabled");
-            }
-            false => {
-                trace!("USB device disabled");
-            }
+        #[allow(clippy::if_same_then_else)]
+        if enabled {
+            trace!("USB device enabled");
+        } else {
+            trace!("USB device disabled");
         }
-        self.set_action(ProtocolAction::Uninitialize);
+        Self::set_action(ProtocolAction::Uninitialize);
     }
 
     /// Called after a USB reset after the bus reset sequence is complete.
     fn reset(&mut self) {
         trace!("USB device reset complete");
-        self.set_action(ProtocolAction::Uninitialize);
+        Self::set_action(ProtocolAction::Uninitialize);
     }
 
     /// Called when the host has set the address of the device to `addr`.
@@ -87,28 +85,27 @@ impl Handler for Control {
 
     /// Called when the host has enabled or disabled the configuration of the device.
     fn configured(&mut self, configured: bool) {
-        match configured {
-            true => trace!("USB device configuration enabled"),
-            false => trace!("USB device configuration disabled"),
+        #[allow(clippy::if_same_then_else)]
+        if configured {
+            trace!("USB device configured");
+        } else {
+            trace!("USB device deconfigured");
         }
-        self.set_action(ProtocolAction::Uninitialize);
+        Self::set_action(ProtocolAction::Uninitialize);
     }
 
     /// Called when the bus has entered or exited the suspend state.
     fn suspended(&mut self, suspended: bool) {
-        match suspended {
-            true => {
-                info!("USB device suspended");
-                update_status(DisplayType::Init);
-            }
-            false => {
-                info!("USB device resumed");
-            }
+        if suspended {
+            info!("USB device suspended");
+            update_status(DisplayType::Init);
+        } else {
+            info!("USB device resumed");
         }
 
         // It could be argued that we shoud store off the current state and
         // reapply it after resume.  But we're not going to do that.
-        self.set_action(ProtocolAction::Uninitialize);
+        Self::set_action(ProtocolAction::Uninitialize);
     }
 
     /// Respond to OUT control messages, where the host sends us a command.
@@ -127,10 +124,10 @@ impl Handler for Control {
             Err(ControlError::Invalid) => Some(OutResponse::Rejected),
             Ok(request) => {
                 // Handle the request
-                match self.handle_out(&request) {
+                match Self::handle_out(&request) {
                     Err(ControlError::Ignore) => None,
                     Err(ControlError::Invalid) => Some(OutResponse::Rejected),
-                    Ok(_) => Some(OutResponse::Accepted),
+                    Ok(()) => Some(OutResponse::Accepted),
                 }
             }
         }
@@ -151,7 +148,7 @@ impl Handler for Control {
             Err(ControlError::Invalid) => Some(InResponse::Rejected),
             Ok(request) => {
                 // Handle the request and build the response
-                match self.handle_in(&request, buf, req.length as usize) {
+                match Self::handle_in(&request, buf, req.length as usize) {
                     Err(ControlError::Ignore) => None,
                     Err(ControlError::Invalid) | Ok(0) => Some(InResponse::Rejected),
                     Ok(len) => Some(InResponse::Accepted(&buf[..len])),
@@ -194,19 +191,13 @@ impl Control {
         }
 
         // Ignore requests to other interfaces.
-        if req.index != self.if_num.0 as u16 {
+        if req.index != u16::from(self.if_num.0) {
             info!("Ignoring Control request to interface: 0x{:02x}", req.index);
             return Err(ControlError::Ignore);
         }
 
         // Check we got a supported request - reject if not.
-        let request = match ControlRequest::try_from(req.request) {
-            Ok(r) => r,
-            Err(_) => {
-                info!("Invalid Control request type: 0x{:02x}", req.request);
-                return Err(ControlError::Invalid);
-            }
-        };
+        let request = ControlRequest::try_from(req.request).map_err(|_| ControlError::Invalid)?;
 
         // Check we got a request in the correct direction - reject if not.
         if request.direction() != dir {
@@ -222,11 +213,12 @@ impl Control {
     }
 
     // Handler for OUT rquests.
-    fn handle_out(&mut self, request: &ControlRequest) -> Result<(), ControlError> {
+    #[allow(clippy::unnecessary_wraps)]
+    fn handle_out(request: &ControlRequest) -> Result<(), ControlError> {
         info!("Received Control OUT request: {}", request);
         match request {
-            ControlRequest::Reset => self.set_action(ProtocolAction::Reset),
-            ControlRequest::Shutdown => self.set_action(ProtocolAction::Uninitialize),
+            ControlRequest::Reset => Self::set_action(ProtocolAction::Reset),
+            ControlRequest::Shutdown => Self::set_action(ProtocolAction::Uninitialize),
             ControlRequest::EnterBootloader => {
                 info!("Entering DFU bootloader");
                 reboot_dfu(); // Does not return
@@ -242,7 +234,6 @@ impl Control {
 
     // Handler for IN requests.
     fn handle_in(
-        &self,
         request: &ControlRequest,
         buf: &mut [u8],
         len: usize,
@@ -264,9 +255,9 @@ impl Control {
 
         // Perform any required actions, and fill in the response
         match request {
-            ControlRequest::Echo => buf[0] = &ControlRequest::Echo as *const _ as u8,
+            ControlRequest::Echo => buf[0] = ControlRequest::Echo as u8,
             ControlRequest::Init => {
-                self.handle_init(buf);
+                Self::handle_init(buf);
             }
             ControlRequest::GitRev => {
                 let version = GIT_VERSION.unwrap_or("unknown");
@@ -301,7 +292,7 @@ impl Control {
 
     // Sets the shared PROTOCOL_ACTION to the given action to signal to the
     // ProtocolHandler object to take the appropriate action.
-    fn set_action(&self, action: ProtocolAction) {
+    fn set_action(action: ProtocolAction) {
         // Try to take the current action - if there is one we need to
         // decide how to modify it and then resignal it.
         let new_action = match take_protocol_action() {
@@ -334,7 +325,7 @@ impl Control {
     // Will assume that buf is long enough for the response, and it has been
     // zeroed out.  The length was checked in control_in() and the buf zeroed
     // in handle_in().
-    fn handle_init(&self, buf: &mut [u8]) {
+    fn handle_init(buf: &mut [u8]) {
         assert!(buf.len() >= INIT_CONTROL_RESPONSE_LEN);
 
         // Check whether the Protocol Handler is already initialized.  If so
@@ -343,7 +334,7 @@ impl Control {
         let initialized = get_protocol_init();
 
         // Indicate the Protocol Handler that it should initialize.
-        self.set_action(ProtocolAction::Initialize);
+        Self::set_action(ProtocolAction::Initialize);
 
         // Build the response.
 
@@ -388,7 +379,7 @@ enum ControlRequest {
 // Control request functions.
 impl ControlRequest {
     // Returns the supported direction of the request.
-    pub fn direction(&self) -> Direction {
+    pub fn direction(self) -> Direction {
         match self {
             ControlRequest::Echo
             | ControlRequest::Init
@@ -403,13 +394,13 @@ impl ControlRequest {
     }
 
     // Returns the response (data) length of the request, for OUT requests.
-    fn response_len(&self) -> usize {
+    fn response_len(self) -> usize {
         match self {
             ControlRequest::Echo => ECHO_CONTROL_RESPONSE_LEN,
             ControlRequest::Init => INIT_CONTROL_RESPONSE_LEN,
-            ControlRequest::GitRev => MAX_XUM_DEVINFO_SIZE_USIZE,
-            ControlRequest::RustcVer => MAX_XUM_DEVINFO_SIZE_USIZE,
-            ControlRequest::PkgVer => MAX_XUM_DEVINFO_SIZE_USIZE,
+            ControlRequest::GitRev | ControlRequest::RustcVer | ControlRequest::PkgVer => {
+                MAX_XUM_DEVINFO_SIZE_USIZE
+            }
             _ => 0,
         }
     }
