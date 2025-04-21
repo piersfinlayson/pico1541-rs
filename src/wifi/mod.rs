@@ -200,9 +200,7 @@ impl WiFi {
             // Get WiFi config - if we've detected WiFi is supported, we should
             // have the pins, but we will fail gracefully just in case.
             let Some(wifi_config) = guard.get_wifi_pins() else {
-                error!(
-                    "WiFi initialization failed - pins not found, but we detected WiFi support"
-                );
+                error!("WiFi initialization failed - pins not found, but we detected WiFi support");
                 return None;
             };
 

@@ -2,7 +2,7 @@
 //!
 //! In some cases we reimplement embassy-time functions, primarily to make it
 //! clear what they are doing under the covers, but in some cases (like
-//! delay_ns) because we can't get sub 1us delays with the embassy-time code
+//! `delay_ns`) because we can't get sub 1us delays with the embassy-time code
 //! for Pico.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
@@ -16,6 +16,7 @@ use embassy_time::{Duration, Instant};
 ///
 /// We always inline it to reduce function call/return overhead, as this is
 /// typically used in timing critical functions
+#[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn block_until(expires: Instant) {
     while Instant::now() < expires {}
@@ -26,6 +27,7 @@ pub fn block_until(expires: Instant) {
 ///
 /// We always inline it to reduce function call/return overhead, as this is
 /// typically used in timing critical functions
+#[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn block_for(duration: Duration) {
     block_until(Instant::now() + duration);
@@ -101,7 +103,7 @@ pub(crate) use iec_delay;
 /// Macro which yields to the scheduler for at least the specified time.  As
 /// embassy will only come back to us after whatever has been scheduled has
 /// paused, it could be longer than specified.  If you need a more accurate
-/// pause, considering using block_us! instead.
+/// pause, considering using `block_us!` instead.
 macro_rules! yield_us {
     ($us:expr) => {
         embassy_time::Timer::after_micros($us).await
@@ -112,7 +114,7 @@ pub(crate) use yield_us;
 /// Macro which yields to the scheduler for at least the specified time.  As
 /// embassy will only come back to us after whatever has been scheduled has
 /// paused, it could be longer than specified.  If you need a more accurate
-/// pause, considering using block_ms! instead.
+/// pause, considering using `block_ms!` instead.
 macro_rules! yield_ms {
     ($ms:expr) => {
         embassy_time::Timer::after_millis($ms).await
@@ -123,7 +125,7 @@ pub(crate) use yield_ms;
 /// Macro which yields to the scheduler for at least the specified time.  As
 /// embassy will only come back to us after whatever has been scheduled has
 /// paused, it could be longer than specified.  If you need a more accurate
-/// pause, considering using block_for() instead.
+/// pause, considering using `block_for()` instead.
 macro_rules! yield_for {
     ($dur:expr) => {
         embassy_time::Timer::after($dur).await
@@ -163,9 +165,9 @@ pub mod iec {
     /// Time to wait for CLK line to be drive using NIB SRQ write
     pub const NIB_SRQ_CLK_WRITE_IMEOUT: Duration = Duration::from_micros(100);
 
-    /// A "forever" timeout.  We can't use Duration::MAX, as that's a u64, and
-    /// causes the underlying embassy_time methods to panic.  So we set it to a
-    /// year (ish).
+    /// A "forever" timeout.  We can't use `Duration::MAX`, as that's a u64,
+    /// and causes the underlying `embassy_time` methods to panic.  So we set
+    /// it to a year (ish).
     pub const FOREVER_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 
     // A set of low-level IEC bus timings, taken from xum1541.  All are in us.

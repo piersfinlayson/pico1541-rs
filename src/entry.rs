@@ -8,8 +8,8 @@
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
-use embassy_time::Ticker;
 use embassy_rp::config::Config;
+use embassy_time::Ticker;
 
 use crate::constants::LOOP_LOG_INTERVAL;
 use crate::infra::display::status_task;

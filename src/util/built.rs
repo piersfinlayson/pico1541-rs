@@ -36,15 +36,11 @@ pub fn log_fw_info(bin_name: &str, serial: &str) {
 
     // Figure out what hardware platform we're running on
     let hardware = if cfg!(feature = "pico") {
-        match is_wifi {
-            true => "Pico W",
-            false => "Pico",
-        }
+        if is_wifi { "Pico W" } else { "Pico" }
+    } else if is_wifi {
+        "Pico 2 W"
     } else {
-        match is_wifi {
-            true => "Pico 2 W",
-            false => "Pico 2",
-        }
+        "Pico 2"
     };
 
     // Log general information

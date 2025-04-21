@@ -70,7 +70,7 @@ pub async fn get_serial(
     {
         // Fill the buffer with the constant value
         match write!(serial, "{}", constants::XUM1541_SERIAL) {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(_) => {
                 // Handle error - fallback to manual char-by-char copying
                 for c in constants::XUM1541_SERIAL.chars() {
