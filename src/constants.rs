@@ -2,7 +2,7 @@
 //!
 //! It has multiple versions of constants that are used by different
 //! configurations, such as usb product string.  The correct version is
-//! selected by the dev_info module.
+//! selected by the `dev_info` module.
 
 // Copyright (c) 2025 Piers Finlayson <piers@piers.rocks>
 //
@@ -30,7 +30,7 @@ pub const PROTOCOL_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 /// How often the status display must feed the watchdog to prevent a reset.
 pub const STATUS_DISPLAY_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 
-/// How often the WiFi Control task must feed the watchdog to prevent a reset.
+/// How often the Wi-Fi Control task must feed the watchdog to prevent a reset.
 pub const WIFI_CONTROL_WATCHDOG_TIMER: Duration = Duration::from_secs(1);
 
 /// How often a drive (read/write) operation must feed the watchdog to prevent
@@ -57,7 +57,7 @@ pub const LOOP_LOG_INTERVAL: Duration = Duration::from_secs(5);
 /// How often the protocol handler task pauses so other tasks can run.  We
 /// make this low, so it can shuffle data between the USB endpoint and the
 /// protocol handler, but it doesn't need to be a low as the
-/// USB_DATA_TRANSFER_WAIT_TIMER, as the USB endpoint deals with 64 bytes at
+/// `USB_DATA_TRANSFER_WAIT_TIMER`, as the USB endpoint deals with 64 bytes at
 /// a time, whereas that may deal with single bytes at a time.
 pub const PROTOCOL_LOOP_TIMER: Duration = Duration::from_micros(10);
 
@@ -175,19 +175,19 @@ pub const FIRMWARE_VERSION: u8 = PICO1541_FIRMWARE_VERSION;
 // Not all pins have constants - see gpio.rs for other pin assignments
 //
 
-/// WiFi power pin
+/// Wi-Fi power pin
 pub const WIFI_PWR_PIN: u8 = 23;
 
-/// WiFi chip select pin
+/// Wi-Fi chip select pin
 pub const WIFI_CS_PIN: u8 = 25;
 
-/// WiFi SPI DIO pin
+/// Wi-Fi SPI DIO pin
 pub const WIFI_DIO_PIN: u8 = 24;
 
-/// WiFi SPI CLK pin
+/// Wi-Fi SPI CLK pin
 pub const WIFI_CLK_PIN: u8 = 29;
 
-/// ADC pin used to check voltage for WiFI capability detection
+/// ADC pin used to check voltage for Wi-FI capability detection
 #[allow(dead_code)] // Only used within const_assert!()
 pub const WIFI_DETECT_ADC_PIN: u8 = 29;
 
@@ -208,5 +208,5 @@ pub const CORE1_STACK_SIZE: usize = 4096;
 pub const READ_DATA_CHANNEL_SIZE: usize = 1;
 
 /// Total number of "generic" GPIOs - those which are exposed from the Pico
-/// externally, for general purposes, not including WiFi or ADC pins.
+/// externally, for general purposes, not including Wi-Fi or ADC pins.
 pub const TOTAL_GENERIC_GPIOS: usize = 23; // 0-22 inclusive

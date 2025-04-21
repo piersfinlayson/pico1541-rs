@@ -9,6 +9,7 @@
 use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
 use embassy_time::Ticker;
+use embassy_rp::config::Config;
 
 use crate::constants::LOOP_LOG_INTERVAL;
 use crate::infra::display::status_task;
@@ -25,11 +26,12 @@ use crate::wifi::{WiFi, spawn_wifi};
 /// mean the device has halted.
 ///
 /// See [`task.rs`] for an explanation of the multi-core strategy.
+#[allow(clippy::similar_names)]
 pub async fn common_main(spawner: Spawner, bin_name: &str) -> ! {
     // Get device peripherals.  This gives us access to the hardware - like
     // the USB and Watchdog.  We extract the ones we need to avoid having to
     // pass the entire object around, partially moving it.
-    let p = embassy_rp::init(Default::default());
+    let p = embassy_rp::init(Config::default());
     let embassy_rp::Peripherals {
         PIN_0: pin_0,
         PIN_1: pin_1,

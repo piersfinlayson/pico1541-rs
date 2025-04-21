@@ -1,19 +1,19 @@
-//! This module handles WiFi support for the pico1541.
+//! This module handles Wi-Fi support for the pico1541.
 //!
-//! As well as actually running the WiFi stack, this module also detects
-//! whether the board we are running on supports WiFi and, if so, provides
-//! a capability to control the WiFi GPIO 0 (which on a Pico W/Pico 2 W is
-//! connected to the onboard LED).  That is done via the WIFI_GPIO_0 Signal
+//! As well as actually running the Wi-Fi stack, this module also detects
+//! whether the board we are running on supports Wi-Fi and, if so, provides
+//! a capability to control the Wi-Fi GPIO 0 (which on a Pico W/Pico 2 W is
+//! connected to the onboard LED).  That is done via the `WIFI_GPIO_0` Signal
 //! static.
 //!
-//! StatusDisplay also needs to know whether to use the standard LED GPIO (25)
-//! or the WiFi GPIO.  It does this, by querying the IS_WIFI AtomicBool
+//! `StatusDisplay` also needs to know whether to use the standard LED GPIO (25)
+//! or the Wi-Fi GPIO.  It does this, by querying the `IS_WIFI` `AtomicBool`
 //! static.
 //!
 //! Both these statics are owned and initialized by this module:
-//! - IS_WIFI is set up by WiFi::create_static()
-//! - WIFI_GPIO_0 is set up at start of day, but will only be acted upon once
-//!   spawn_wifi() has been called.
+//! - `IS_WIFI` is set up by `WiFi::create_static()`
+//! - `WIFI_GPIO_0` is set up at start of day, but will only be acted upon once
+//!   `spawn_wifi()` has been called.
 //!
 //! There is no issue w
 //!
@@ -53,15 +53,15 @@ use crate::task::spawn_or_panic_yield;
 // Statics
 //
 
-// Static boolean indicating whether this board has WiFi support.  We could
-// just provide a method on WiFi to allow this to be queried, but this is
-// easier and quicker (in case WiFi is locked by something else).
+// Static boolean indicating whether this board has Wi-Fi support.  We could
+// just provide a method on Wi-Fi to allow this to be queried, but this is
+// easier and quicker (in case Wi-Fi is locked by something else).
 pub static IS_WIFI: AtomicBool = AtomicBool::new(false);
 
-// Signal for StatusDisplay to update the WiFi GPIO 0.
+// Signal for StatusDisplay to update the Wi-Fi GPIO 0.
 pub static WIFI_GPIO_0: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 
-// Static WiFI object.  Cannot wrap in a Mutex because the cyw43 WiFi objects
+// Static WiFI object.  Cannot wrap in a Mutex because the cyw43 Wi-Fi objects
 // are not Send.
 static WIFI: StaticCell<WiFi> = StaticCell::new();
 
@@ -78,9 +78,9 @@ bind_interrupts!(struct PioIrqs {
     PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
 });
 
-/// The WiFi object is used to control and handle WiFi support for the
+/// The `WiFi` object is used to control and handle Wi-Fi support for the
 /// pico1541.  This must be created, whether running on a Pico or Pico W, as it
-/// it detects whether WiFi is actually supported by the board we are running
+/// it detects whether Wi-Fi is actually supported by the board we are running
 /// on.
 ///
 /// ```rust
@@ -89,7 +89,7 @@ bind_interrupts!(struct PioIrqs {
 /// let mut wifi = WiFi::new(p_adc, pin_29);
 /// wifi.init().await;
 ///
-/// info!("WiFi supported: {}", IS_WIFI.load(Ordering::Relaxed));
+/// info!("Wi-Fi supported: {}", IS_WIFI.load(Ordering::Relaxed));
 /// ```
 pub struct WiFi {
     p_adc: Option<ADC>,
@@ -101,7 +101,7 @@ pub struct WiFi {
 }
 
 impl WiFi {
-    /// Creates a new instance of the WiFi object.
+    /// Creates a new instance of the `WiFi` object.
     pub async fn create_static(p_adc: ADC, p_pio0: PIO0, p_dma_ch0: DMA_CH0) -> &'static mut Self {
         // Get the ADC pin required to detect whether WiFi is supported.
         const_assert!(WIFI_DETECT_ADC_PIN == 29);
@@ -160,7 +160,8 @@ impl WiFi {
             .read(&mut channel)
             .await
             .unwrap();
-        let voltage = (raw_value as f32) * (3.3 / (1 << 12) as f32);
+        #[allow(clippy::cast_precision_loss)]
+        let voltage = f32::from(raw_value) * (3.3 / (1 << 12) as f32);
         debug!("ADC3 voltage: {}V", voltage);
         self.wifi_supported = voltage < 0.2;
         IS_WIFI.store(self.wifi_supported, Ordering::Release);
@@ -171,12 +172,12 @@ impl WiFi {
         self.adc_pin.replace(adc_pin);
     }
 
-    /// Initialize the WiFi object.  Must be called before calling
-    /// spawn_wifi() to start the WiFi tasks.
+    /// Initialize the `WiFi` object.  Must be called before calling
+    /// `spawn_wifi()` to start the `WiFi` tasks.
     ///
     /// This function returns an Option<tuple>, with the tuple contaning
-    /// arguments required by the spawn_wifi() function.  None is returned
-    /// is this device doesn't support WiFi (i.e. a non-W variant of the
+    /// arguments required by the `spawn_wifi()` function.  None is returned
+    /// is this device doesn't support Wi-Fi (i.e. a non-W variant of the
     /// Pico).
     pub async fn init(
         &mut self,
@@ -198,14 +199,11 @@ impl WiFi {
 
             // Get WiFi config - if we've detected WiFi is supported, we should
             // have the pins, but we will fail gracefully just in case.
-            let wifi_config = match guard.get_wifi_pins() {
-                Some(wifi_config) => wifi_config,
-                None => {
-                    error!(
-                        "WiFi initialization failed - pins not found, but we detected WiFi support"
-                    );
-                    return None;
-                }
+            let Some(wifi_config) = guard.get_wifi_pins() else {
+                error!(
+                    "WiFi initialization failed - pins not found, but we detected WiFi support"
+                );
+                return None;
             };
 
             // Set up the power and chip select pins as output with the
@@ -267,10 +265,10 @@ impl WiFi {
     }
 }
 
-/// Helper to spawn all required WiFi tasks, on the same core as this
+/// Helper to spawn all required `WiFi` tasks, on the same core as this
 /// function is called from:
-/// - The cyw43 WiFi stack
-/// - The WiFi control task
+/// - The cyw43 Wi-Fi stack
+/// - The `WiFi` control task
 pub async fn spawn_wifi(
     spawner: &Spawner,
     wifi_args: (
@@ -335,9 +333,9 @@ pub async fn wifi_control_task(
     }
 }
 
-/// Helper function to retrieve whether WiFi is supported.
+/// Helper function to retrieve whether Wi-Fi is supported.
 ///
-/// The response is valid once WiFi::create_static() has returned.
+/// The response is valid once `WiFi::create_static()` has returned.
 pub fn is_wifi_supported() -> bool {
     IS_WIFI.load(Ordering::Relaxed)
 }

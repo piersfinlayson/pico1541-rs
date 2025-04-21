@@ -75,7 +75,7 @@ pub async fn core1_main(watchdog: &'static WatchdogType) {
 ///
 /// Using the Spawner object to spawn can fail, becayse too many instances of
 /// that task are already running.  By default only 1 is alllowed at once, but
-/// is configurable with e.g. #[embassy_executor::task(pool_size = 4).
+/// is configurable with e.g. `#[embassy_executor::task(pool_size = 4)]`.
 ///
 /// We handle that by rebooting - but it shouldn't happen if processes are only
 /// spawned at start of day.
@@ -98,7 +98,7 @@ pub async fn spawn_or_panic_yield<T, E: defmt::Format>(
     yield_us!(250);
 }
 
-/// Syncronous version of spawn_or_panic_yield.  This is used when spawning
+/// Syncronous version of `spawn_or_panic_yield`.  This is used when spawning
 /// the first task on core 1, as we're in a non-async context there, and it's
 /// not necessary to yield, as there's nothing else on the core to run.
 pub fn spawn_or_panic<T, E: defmt::Format>(spawn_result: Result<T, E>, task_name: &str) {
