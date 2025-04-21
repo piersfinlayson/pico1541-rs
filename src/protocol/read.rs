@@ -61,7 +61,7 @@ impl IecDriver {
     ///
     /// These are all supported by uploading custom firmware routines to the
     /// drive.  That is outside the scope of the pico1541 - it is performed
-    /// by the host software, such as OpenCBM, using the pico1541 as a data
+    /// by the host software, such as `OpenCBM`, using the pico1541 as a data
     /// transmission vehicle.
     ///
     /// Implements the following steps:
@@ -77,7 +77,7 @@ impl IecDriver {
     /// - Err(DriverError, usize) - Error and number of bytes read and sent
     ///   via USB, before the error occurred.
     ///
-    /// Note that EarlyExit and Eoi are not considered errors - they are
+    /// Note that `EarlyExit` and Eoi are not considered errors - they are
     /// converted before this function returns to Ok(u16).  The fact that
     /// fewer bytes than requested were returned demonstrates to the host that
     /// the read was terminated early.
@@ -126,11 +126,12 @@ impl IecDriver {
         protocol: ProtocolType,
         option: ReadOption,
     ) -> Result<u16, (DriverError, u16)> {
+        const SIZE: usize = MAX_EP_PACKET_SIZE_USIZE; // Size of the buffer
+
         // Get number of bytes each read loop iteration below.
         let num_bytes = Self::get_read_num_iter_bytes(protocol);
 
         // Tracking variables for read and USB send operations
-        const SIZE: usize = MAX_EP_PACKET_SIZE_USIZE; // Size of the buffer
         let mut count = 0; // Number of bytes read so far
         let mut usb_buf = [0u8; SIZE]; // Buffer for data to be sent
         let mut usb_buf_count = 0; // Count of bytes in the USB buffer
@@ -185,8 +186,9 @@ impl IecDriver {
         // Now return either the number of bytes successfully read (which means
         // the number actually sent via USB to the host), or the error and the
         // number of bytes actuallt sent.
+        #[allow(clippy::cast_possible_truncation)]
         result
-            .map(|_| usb_sent as u16)
+            .map(|()| usb_sent as u16)
             .map_err(|e| (e, usb_sent as u16))
     }
 
@@ -205,7 +207,7 @@ impl IecDriver {
     /// * `buf` - Buffer to store the read bytes
     ///
     /// # Returns
-    /// * `Ok((bool, usize))` - (early_exit flag, number of bytes read)
+    /// * `Ok((bool, usize))` - (`early_exit` flag, number of bytes read)
     /// * `Err(DriverError)` - Error encountered during read
     async fn read_next_chunk(
         &mut self,
@@ -219,6 +221,7 @@ impl IecDriver {
         assert!(!buf.is_empty());
 
         // Read the byte(s)
+        #[allow(clippy::match_same_arms)]
         let result = match protocol {
             ProtocolType::Cbm => self.read_cbm(buf).await,
             ProtocolType::S1 => self.read_s1(buf).await,
@@ -234,11 +237,7 @@ impl IecDriver {
                 }
             }
             ProtocolType::NibCommand => {
-                buf[0] = if !self.get_suppress_nib_command() {
-                    self.read_nib_parburst()
-                } else {
-                    0x88
-                };
+                buf[0] = self.read_nib_srqburst_checked();
                 Ok(1)
             }
             ProtocolType::NibSrq => {
@@ -269,7 +268,7 @@ impl IecDriver {
 
             // Handle both (NIB) EarlyExit and EOI as early exit conditions.
             // In both cases, we didn't read a (valid) byte.
-            Err(DriverError::EarlyExit) | Err(DriverError::Eoi) => Ok((true, 0)),
+            Err(DriverError::EarlyExit | DriverError::Eoi) => Ok((true, 0)),
             Err(e) => Err(e),
         }
     }
@@ -348,16 +347,16 @@ impl IecDriver {
     // loop.
     fn get_read_num_iter_bytes(protocol: ProtocolType) -> usize {
         match protocol {
-            ProtocolType::Cbm => DEFAULT_READ_ITER_BYTES,
-            ProtocolType::S1 => DEFAULT_READ_ITER_BYTES,
-            ProtocolType::S2 => DEFAULT_READ_ITER_BYTES,
+            ProtocolType::Cbm | ProtocolType::S1 | ProtocolType::S2 => DEFAULT_READ_ITER_BYTES,
             ProtocolType::PP => PP_READ_ITER_BYTES,
-            ProtocolType::P2 => DEFAULT_READ_ITER_BYTES,
-            ProtocolType::Nib => DEFAULT_READ_ITER_BYTES,
-            ProtocolType::NibCommand => DEFAULT_READ_ITER_BYTES,
-            ProtocolType::NibSrq => DEFAULT_READ_ITER_BYTES,
-            ProtocolType::NibSrqCommand => DEFAULT_READ_ITER_BYTES,
-            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+            ProtocolType::P2
+            | ProtocolType::Nib
+            | ProtocolType::NibCommand
+            | ProtocolType::NibSrq
+            | ProtocolType::NibSrqCommand
+            | ProtocolType::Tap
+            | ProtocolType::TapConfig
+            | ProtocolType::None => {
                 unreachable!("Read: Unsupported protocol type")
             }
         }
@@ -380,13 +379,14 @@ impl IecDriver {
 
     /// Performs the specific protocol read startup routine.
     async fn startup_read(&mut self, protocol: ProtocolType, _option: ReadOption) {
+        #[allow(clippy::match_same_arms)]
         match protocol {
-            ProtocolType::Cbm => {}
-            ProtocolType::S1 => {}
-            ProtocolType::S2 => {}
-            ProtocolType::PP => {}
-            ProtocolType::P2 => {}
-            ProtocolType::Nib => {
+            ProtocolType::Cbm
+            | ProtocolType::S1
+            | ProtocolType::S2
+            | ProtocolType::PP
+            | ProtocolType::P2
+            | ProtocolType::Nib => {
                 // Set suppress_nib_command to false
                 self.set_suppress_nib_command(false);
 
@@ -424,15 +424,16 @@ impl IecDriver {
 
     /// Performs specific protocol read termination.
     pub fn terminate_read(&mut self, protocol: ProtocolType, _option: ReadOption) {
+        #[allow(clippy::match_same_arms)]
         match protocol {
-            ProtocolType::Cbm => {}
-            ProtocolType::S1 => {}
-            ProtocolType::S2 => {}
-            ProtocolType::PP => {}
-            ProtocolType::P2 => {}
-            ProtocolType::Nib => {}
-            ProtocolType::NibCommand => {}
-            ProtocolType::NibSrq => {
+            ProtocolType::Cbm
+            | ProtocolType::S1
+            | ProtocolType::S2
+            | ProtocolType::PP
+            | ProtocolType::P2
+            | ProtocolType::Nib
+            | ProtocolType::NibCommand
+            | ProtocolType::NibSrq => {
                 // Release all lines
                 self.bus.release_lines(IO_SRQ | IO_CLK | IO_DATA | IO_ATN);
             }
@@ -472,7 +473,7 @@ impl IecDriver {
         }
 
         // Read the byte
-        match self.iec_receive_byte().await {
+        match self.iec_receive_byte() {
             Ok(byte) => {
                 // Acknowledge byte received by pulling DATA
                 self.bus.set_data();
@@ -493,7 +494,7 @@ impl IecDriver {
     }
 
     /// Receive a single byte from the IEC bus
-    async fn iec_receive_byte(&mut self) -> Result<u8, DriverError> {
+    fn iec_receive_byte(&mut self) -> Result<u8, DriverError> {
         // Wait for CLK to be asserted (pulled low)
         if !self.wait_timeout_2ms(IO_CLK, IO_CLK) {
             debug!("Receive byte: no clock");
@@ -552,7 +553,7 @@ impl IecDriver {
 
             // Get the next bit - we read from MSB to LSB
             let bit = self.bus.get_clock();
-            byte = (byte >> 1) | ((bit as u8) << 7);
+            byte = (byte >> 1) | (u8::from(bit) << 7);
 
             // Pull data low
             self.bus.set_data();
@@ -597,7 +598,7 @@ impl IecDriver {
             iec_delay!();
 
             // Read the bit from DATA
-            byte = (byte >> 1) | ((self.bus.get_data() as u8) << 7);
+            byte = (byte >> 1) | (u8::from(self.bus.get_data()) << 7);
 
             // Release ATN now we've read the bit
             self.bus.release_atn();
@@ -609,7 +610,7 @@ impl IecDriver {
             iec_delay!();
 
             // Read the bit
-            byte = (byte >> 1) | ((self.bus.get_data() as u8) << 7);
+            byte = (byte >> 1) | (u8::from(self.bus.get_data()) << 7);
 
             // Set ATN now we've read the bit
             self.bus.set_atn();
@@ -690,6 +691,7 @@ impl IecDriver {
     }
 
     // Caller must release DATAs before calling this function
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn read_nib_handshaked(&mut self, toggle: bool) -> u8 {
         // Wait for a byte to be ready (data toggle matches expected value).
@@ -714,6 +716,7 @@ impl IecDriver {
         byte
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn read_nib_srq_byte(&mut self) -> u8 {
         let mut byte = 0;
@@ -728,17 +731,17 @@ impl IecDriver {
             block_ns!(375);
 
             // Read data bit
-            byte = (byte << 1) | (self.bus.get_data() as u8);
+            byte = (byte << 1) | u8::from(self.bus.get_data());
         }
 
         byte
     }
 
     fn read_nib_srqburst_checked(&mut self) -> u8 {
-        if !self.get_suppress_nib_command() {
-            self.read_nib_srqburst()
-        } else {
+        if self.get_suppress_nib_command() {
             0x88
+        } else {
+            self.read_nib_srqburst()
         }
     }
 }

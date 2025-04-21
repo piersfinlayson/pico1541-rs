@@ -109,12 +109,14 @@ impl Line {
     }
 
     /// Drive the output line low (active) - ouptut is inverted pin so high
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set(&mut self) {
         self.output_pin.as_mut().unwrap().set_high();
     }
 
     /// Release the output line (inactive) - output is inverted pin so low
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release(&mut self) {
         self.output_pin.as_mut().unwrap().set_low();
@@ -122,12 +124,14 @@ impl Line {
 
     /// Read the current state of the line.  This returns true is the line
     /// is active - as it is not inverted, this means true if low.
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn get(&self) -> bool {
         self.input_pin.as_ref().unwrap().is_low()
     }
 
     /// Check if line is currently being driven low - inverted pin so high
+    #[allow(clippy::inline_always)]
     #[allow(dead_code)]
     #[inline(always)]
     pub fn is_set(&self) -> bool {
@@ -183,86 +187,102 @@ impl IecBus {
     }
 
     // DATA line control
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set_data(&mut self) {
         self.data.set();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release_data(&mut self) {
         self.data.release();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn get_data(&self) -> bool {
         self.data.get()
     }
 
     // CLOCK line control
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set_clock(&mut self) {
         self.clock.set();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release_clock(&mut self) {
         self.clock.release();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn get_clock(&self) -> bool {
         self.clock.get()
     }
 
     // ATN line control
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set_atn(&mut self) {
         self.atn.set();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release_atn(&mut self) {
         self.atn.release();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn get_atn(&self) -> bool {
         self.atn.get()
     }
 
     // RESET line control
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set_reset(&mut self) {
         self.reset.set();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release_reset(&mut self) {
         self.reset.release();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn get_reset(&self) -> bool {
         self.reset.get()
     }
 
     // SRQ line control (if available)
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set_srq(&mut self) {
         self.srq.set();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release_srq(&mut self) {
         self.srq.release();
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn get_srq(&self) -> bool {
         self.srq.get()
     }
 
     /// Set multiple lines at once based on a bit mask
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set_lines(&mut self, mask: u8) {
         if (mask & IO_DATA) != 0 {
@@ -283,6 +303,7 @@ impl IecBus {
     }
 
     /// Release multiple lines at once based on a bit mask
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release_lines(&mut self, mask: u8) {
         if (mask & IO_DATA) != 0 {
@@ -303,7 +324,7 @@ impl IecBus {
     }
 
     /// Poll all pins - returns a bit mask of _inactive_, i.e. high input
-    /// lines.  This mimics the iec_poll_pins function in the original code.
+    /// lines.  This mimics the `iec_poll_pins` function in the original code.
     pub fn poll_pins(&self) -> u8 {
         let mut result = 0;
         if !self.get_data() {
@@ -326,8 +347,9 @@ impl IecBus {
 
     /// Convert between logical and physical IEC line representations
     // TODO may need to be converted to array implementation for speed
+    #[allow(clippy::inline_always)]
     #[inline(always)]
-    pub fn iec_to_hw(&self, iec: u8) -> u8 {
+    pub fn iec_to_hw(iec: u8) -> u8 {
         let mut hw = 0;
         if (iec & IEC_DATA) != 0 {
             hw |= IO_DATA;
@@ -346,12 +368,12 @@ impl IecBus {
 
     /// Convert from IEC logical representation to physical, then set lines
     pub fn iec_set(&mut self, iec: u8) {
-        self.set_lines(self.iec_to_hw(iec));
+        self.set_lines(Self::iec_to_hw(iec));
     }
 
     /// Convert from IEC logical representation to physical, then release lines
     pub fn iec_release(&mut self, iec: u8) {
-        self.release_lines(self.iec_to_hw(iec));
+        self.release_lines(Self::iec_to_hw(iec));
     }
 
     /// Convert from IEC logical representation to physical, then perform set/release
@@ -435,7 +457,7 @@ impl ProtocolDriver for IecDriver {
         state: u8,
         timeout: Option<Duration>,
     ) -> Result<(), DriverError> {
-        let hw_mask = self.iec2hw(line);
+        let hw_mask = Self::iec2hw(line);
         let hw_state = if state != 0 { hw_mask } else { 0 };
 
         let timeout = timeout.unwrap_or(FOREVER_TIMEOUT);
@@ -500,7 +522,7 @@ impl ProtocolDriver for IecDriver {
         for ii in 0..8 {
             // Read the bit and set the corresponding bit in val
             if self.bus.dio[ii].read_pin() {
-                val |= (self.bus.dio[ii].read_pin() as u8) << ii;
+                val |= (u8::from(self.bus.dio[ii].read_pin())) << ii;
             }
         }
 
@@ -522,12 +544,12 @@ impl IecDriver {
         }
     }
 
-    /// Get supress_nib_command status
+    /// Get `supress_nib_command` status
     pub fn get_suppress_nib_command(&self) -> bool {
         self.suppress_nib_command
     }
 
-    /// Set supress_nib_command status
+    /// Set `supress_nib_command` status
     pub fn set_suppress_nib_command(&mut self, suppress: bool) {
         self.suppress_nib_command = suppress;
     }
@@ -538,6 +560,7 @@ impl IecDriver {
     }
 
     /// Combined set and release operation
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set_release(&mut self, set: u8, release: u8) {
         self.bus.set_lines(set);
@@ -585,15 +608,15 @@ impl IecDriver {
 
     /// Wait up to 2ms for lines to reach specified state.
     ///
-    /// poll_pins() returns the mask if the pin is high (inactive).
+    /// `poll_pins()` returns the mask if the pin is high (inactive).
     ///
-    /// If state is the mask being tested for (i.e. IO_DATA, IO_DATA), then
+    /// If state is the mask being tested for (i.e. `IO_DATA`, `IO_DATA`), then
     /// we wait until the line is low/active.
     ///
-    /// If the state is 0 (i.e. IO_DATA, 0), then we wait until the line is
+    /// If the state is 0 (i.e. `IO_DATA`, 0), then we wait until the line is
     /// high/inactive.
     ///
-    /// If mask is two lines (i.e IO_ATN | IO_RESET) and state is 0, then we
+    /// If mask is two lines (i.e `IO_ATN` | `IO_RESET`) and state is 0, then we
     /// wait until at least one line is high/inactive.  If both lines remain
     /// low/active in this case, we return false.
     ///
@@ -602,7 +625,7 @@ impl IecDriver {
     /// We wait for up to 2ms.
     ///
     /// Timing is considered critical here to wait for around 2ms.  Hence we
-    /// use block_us.
+    /// use `block_us`.
     pub fn wait_timeout_2ms(&mut self, mask: u8, state: u8) -> bool {
         self.wait_timeout_block(mask, state, Duration::from_millis(2))
     }
@@ -662,7 +685,7 @@ impl IecDriver {
             }
 
             // Yield, briefly.
-            yield_us!(PROTOCOL_YIELD_TIMER_US)
+            yield_us!(PROTOCOL_YIELD_TIMER_US);
         }
     }
 
@@ -710,7 +733,7 @@ impl IecDriver {
 
     /// Check if the bus is free
     /// We aim for every exit path to take 200us.
-    /// Timing is important, to achieve this 200us, so we use delay_block.
+    /// Timing is important, to achieve this 200us, so we use `delay_block`.
     async fn check_if_bus_free(&mut self) -> bool {
         // Release all lines and wait for drive reaction time
         self.bus.release_lines(IO_ATN | IO_CLK | IO_DATA | IO_RESET);
@@ -748,7 +771,7 @@ impl IecDriver {
     }
 
     /// Convert logical IEC lines to hardware-specific representation
-    fn iec2hw(&self, iec: u8) -> u8 {
+    fn iec2hw(iec: u8) -> u8 {
         // This would implement the conversion based on the C code's lookup table
         // Simplified implementation for demonstration
         let mut result = 0;

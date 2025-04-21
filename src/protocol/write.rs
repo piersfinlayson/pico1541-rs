@@ -61,9 +61,7 @@ impl IecDriver {
 
         // Do protocol specific startup routine.  Propogate any error, as we
         // don't need to terminate (startup_write() must do any clean-up).
-        self.startup_write(protocol, flags)
-            .await
-            .map_err(|e| (e, 0))?;
+        self.startup_write(protocol, flags).map_err(|e| (e, 0))?;
 
         // Call the main write loop
         let loop_result = self.write_main_loop(len, protocol, flags).await;
@@ -82,13 +80,14 @@ impl IecDriver {
     }
 
     /// Protocol specific startup routine for writing.
-    async fn startup_write(
+    fn startup_write(
         &mut self,
         protocol: ProtocolType,
         flags: ProtocolFlags,
     ) -> Result<(), DriverError> {
+        #[allow(clippy::match_same_arms)]
         match protocol {
-            ProtocolType::Cbm => self.cbm_startup_write(flags).await,
+            ProtocolType::Cbm => self.cbm_startup_write(flags),
             ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => Ok(()),
             ProtocolType::Nib => {
                 // Set suppress_nib_command to false
@@ -123,7 +122,7 @@ impl IecDriver {
 
     // A dedicated function to the startup routine for a CBM protocol write,
     // as it's quite involved, and can fail.
-    async fn cbm_startup_write(&mut self, flags: ProtocolFlags) -> Result<(), DriverError> {
+    fn cbm_startup_write(&mut self, flags: ProtocolFlags) -> Result<(), DriverError> {
         // Check if any device is present on the bus.  If both lines stay low
         // then this check fails - and corresponds to a device present but
         // powered off.  If we stayed, we'd get stuck in wait_for_listener().
@@ -137,9 +136,10 @@ impl IecDriver {
         self.bus.release_data();
 
         // Either pull CLOCK low, or both ATN and CLOCK.
-        match flags.is_atn() {
-            true => self.bus.set_lines(IO_CLK | IO_ATN),
-            false => self.bus.set_lines(IO_CLK),
+        if flags.is_atn() {
+            self.bus.set_lines(IO_CLK | IO_ATN);
+        } else {
+            self.bus.release_clock();
         }
 
         // Short delay to let lines settle
@@ -168,6 +168,7 @@ impl IecDriver {
         protocol: ProtocolType,
         flags: ProtocolFlags,
     ) -> Result<u16, (DriverError, u16)> {
+        #[allow(clippy::match_same_arms)]
         match protocol {
             ProtocolType::Cbm => self.cbm_terminate_write(loop_result, flags).await,
             ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP | ProtocolType::P2 => {
@@ -234,7 +235,7 @@ impl IecDriver {
                     // it takes IEC_* lines not IO_lines*
                     self.wait_timeout_yield(IO_CLK, IO_CLK, WRITE_TALK_CLK_TIMEOUT, true, false)
                         .await
-                        .map(|_| count)
+                        .map(|()| count)
                         .map_err(|e| (e, count))
                 } else {
                     self.bus.release_atn();
@@ -255,11 +256,12 @@ impl IecDriver {
         protocol: ProtocolType,
         flags: ProtocolFlags,
     ) -> Result<u16, (DriverError, u16)> {
+        const SIZE: usize = MAX_EP_PACKET_SIZE_USIZE; // Size of the buffer
+
         // Get number of bytes each write loop iteration below.
         let num_bytes = Self::get_write_num_iter_bytes(protocol);
 
         // Tracking variables for write and USB receive operations
-        const SIZE: usize = MAX_EP_PACKET_SIZE_USIZE; // Size of the buffer
         let mut count = 0; // Number of bytes written so far
         let mut usb_buf = [0u8; SIZE]; // Buffer for received USB data
         let mut usb_buf_count = 0; // Number of bytes in USB buffer
@@ -303,7 +305,8 @@ impl IecDriver {
         };
 
         // Now return the number of bytes successfully written
-        result.map(|_| count as u16).map_err(|e| (e, count as u16))
+        #[allow(clippy::cast_possible_truncation)]
+        result.map(|()| count as u16).map_err(|e| (e, count as u16))
     }
 
     // Gets the number of bytes read in each iteration through the main read
@@ -311,15 +314,15 @@ impl IecDriver {
     fn get_write_num_iter_bytes(protocol: ProtocolType) -> usize {
         match protocol {
             ProtocolType::Cbm => DEFAULT_WRITE_ITER_BYTES,
-            ProtocolType::S1 => DEFAULT_WRITE_ITER_BYTES,
-            ProtocolType::S2 => DEFAULT_WRITE_ITER_BYTES,
-            ProtocolType::PP => PP_WRITE_ITER_BYTES,
-            ProtocolType::P2 => DEFAULT_WRITE_ITER_BYTES,
-            ProtocolType::Nib => DEFAULT_WRITE_ITER_BYTES,
-            ProtocolType::NibCommand => DEFAULT_WRITE_ITER_BYTES,
-            ProtocolType::NibSrq => DEFAULT_WRITE_ITER_BYTES,
-            ProtocolType::NibSrqCommand => DEFAULT_WRITE_ITER_BYTES,
-            ProtocolType::Tap | ProtocolType::TapConfig | ProtocolType::None => {
+            ProtocolType::S1 | ProtocolType::S2 | ProtocolType::PP => PP_WRITE_ITER_BYTES,
+            ProtocolType::P2
+            | ProtocolType::Nib
+            | ProtocolType::NibCommand
+            | ProtocolType::NibSrq
+            | ProtocolType::NibSrqCommand
+            | ProtocolType::Tap
+            | ProtocolType::TapConfig
+            | ProtocolType::None => {
                 unreachable!("Write: Unsupported protocol type")
             }
         }
@@ -357,7 +360,7 @@ impl IecDriver {
             }
             ProtocolType::NibSrq => self
                 .write_nib_srq_handshaked(buf[0], count & 1 == 1)
-                .map(|_| 1),
+                .map(|()| 1),
             ProtocolType::NibSrqCommand => {
                 if self.write_nib_check(buf[0]) {
                     self.write_nib_srqburst(buf[0]);
@@ -406,7 +409,7 @@ impl IecDriver {
         self.bus.set_lines(IO_CLK);
 
         // Send the byte
-        if self.iec_send_byte(byte).await {
+        if self.iec_send_byte(byte) {
             block_us!(IEC_T_BB);
         } else {
             debug!("Raw write: io err");
@@ -420,8 +423,8 @@ impl IecDriver {
 
     /// Send a byte, one bit at a time via the IEC protocol
     ///
-    /// Timing is critical here, so we use block_us.
-    async fn iec_send_byte(&mut self, b: u8) -> bool {
+    /// Timing is critical here, so we use `block_us`.
+    fn iec_send_byte(&mut self, b: u8) -> bool {
         let mut data = b;
 
         for _ in 0..8 {
@@ -655,10 +658,7 @@ impl IecDriver {
         // wait_timeout_block() mask argument is 0 for waiting until the
         // line goes high (inactive), and the pin mask to wait until it goes
         // low (active).
-        let mask = match toggle {
-            true => 0,
-            false => IO_CLK,
-        };
+        let mask = if toggle { 0 } else { IO_CLK };
         if !self.wait_timeout_block(IO_CLK, mask, NIB_SRQ_CLK_WRITE_IMEOUT) {
             return Err(DriverError::Timeout);
         }
@@ -668,6 +668,7 @@ impl IecDriver {
         Ok(())
     }
 
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn write_nib_srq_byte(&mut self, byte: u8) {
         // Start with the most significant bit.
