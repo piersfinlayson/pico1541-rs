@@ -35,6 +35,18 @@ name = "pico1541"
 path = "src/bin/pico1541.rs"
 test = false
 
+[[bin]]
+name = "test_sender"
+path = "hw_tests/sender.rs"
+test = false
+required-features = [ "pico", "pico1541" ]
+
+[[bin]]
+name = "test_receiver"
+path = "hw_tests/receiver.rs"
+test = false
+required-features = [ "pico", "pico1541" ]
+
 [dependencies]
 # embassy-rs crates - Note these are patched below to use a later version from
 # git.

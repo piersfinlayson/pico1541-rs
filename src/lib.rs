@@ -33,6 +33,7 @@ mod task;
 mod usb;
 mod util;
 mod wifi;
+pub mod test;
 
 // Extra binary information that picotool can read.
 #[unsafe(link_section = ".bi_entries")]
