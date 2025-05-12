@@ -34,6 +34,7 @@ use driver::{
 };
 use iec::{IecBus, IecDriver, Line};
 use types::Direction;
+use crate::constants::DRIVE_OPERATION_WATCHDOG_TIMER;
 
 use crate::constants::{
     LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_WRITE_SIZE_USIZE, PROTOCOL_LOOP_TIMER,
@@ -651,6 +652,16 @@ impl ProtocolHandler {
             guard.replace(self.create_iec_driver());
         }
 
+        // Resetting involves actual protocol handling, which will feed the
+        // Drive Operation watchdog.  Hence deregister the ProtocolHandler, and
+        // instead register the Drive Operation.
+        self.watchdog
+            .deregister_task(&TaskId::ProtocolHandler)
+            .await;
+        self.watchdog
+            .register_task(&TaskId::DriveOperation, DRIVE_OPERATION_WATCHDOG_TIMER)
+            .await;
+
         // Reset the bus
         if let Err(e) = guard.as_mut().unwrap().reset(false).await {
             if e == DriverError::Timeout {
@@ -660,6 +671,14 @@ impl ProtocolHandler {
                 update_status(DisplayType::Error);
             }
         }
+
+        // Now switch around the watchdog tasks
+        self.watchdog
+            .deregister_task(&TaskId::DriveOperation)
+            .await;
+        self.watchdog
+            .register_task(&TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER)
+            .await;
 
         // Clear out any existing transfers
         UsbDataTransfer::lock_clear().await;

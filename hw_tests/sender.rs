@@ -17,7 +17,7 @@ use embassy_executor::Spawner;
 use embassy_time::Timer;
 use pico1541_rs::test::{IEC_PINS_OUT, OutputPin};
 
-pub const DELAY_MS: u64 = 100;
+pub const DELAY_MS: u64 = 2500;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
@@ -48,10 +48,10 @@ async fn main(_spawner: Spawner) -> ! {
         for pin in pins.iter_mut() {
             let _ = Timer::after_millis(DELAY_MS).await;
             if pin.is_high() {
-                info!("Drive pin {} low", pin.name);
+                info!("Set pin {} {} low", pin.name, pin.num);
                 pin.set_low();
             } else {
-                info!("Drive pin {} high", pin.name);
+                info!("Set pin {} {} high", pin.name, pin.num);
                 pin.set_high();
             }
         }

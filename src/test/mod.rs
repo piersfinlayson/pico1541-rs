@@ -41,7 +41,7 @@ impl OutputPin {
     pub fn new(name: &'static str, pin: AnyPin) -> Self {
         let num = pin.pin();
         let mut output = Output::new(pin, Level::High);
-        output.set_drive_strength(Drive::_12mA);
+        output.set_drive_strength(Drive::_4mA);
         OutputPin { name, num, pin: output }
     }
 
@@ -86,6 +86,6 @@ impl InputPin {
 
     #[must_use]
     pub fn get_level(&self) -> Level {
-        self.last_level
+	self.last_level
     }
 }

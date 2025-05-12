@@ -63,6 +63,13 @@ pub struct Line {
     output_pin: Option<Flex<'static>>,
 }
 
+
+impl defmt::Format for Line {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "Input: {}, Outupt: {}", self.input_pin_num, self.output_pin_num);
+    }
+}
+
 impl Line {
     /// Create a new Line with the specified input and output pins
     pub fn new(
@@ -533,6 +540,12 @@ impl ProtocolDriver for IecDriver {
 // Various other functions
 impl IecDriver {
     pub fn new(bus: IecBus, watchdog: &'static WatchdogType) -> Self {
+        debug!("Reset line {:?}", bus.data);
+        debug!("ATN line {:?}", bus.atn);
+        debug!("Clock line {:?}", bus.clock);
+        debug!("Data line {:?}", bus.data);
+        debug!("Srq line {:?}", bus.srq);
+
         Self {
             bus,
             eoi: false,
