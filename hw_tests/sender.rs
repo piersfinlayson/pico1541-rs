@@ -15,7 +15,7 @@ use {defmt_rtt as _, panic_probe as _};
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use pico1541_rs::test::{IEC_PINS_OUT, OutputPin};
+use pico1541_rs::test::create_pins;
 
 pub const DELAY_MS: u64 = 2500;
 
@@ -25,24 +25,9 @@ async fn main(_spawner: Spawner) -> ! {
 
     // Create the pin objects
     let p = embassy_rp::init(Default::default());
-    let clock = OutputPin::new("clock", p.PIN_11.into());
-    assert_eq!(clock.num, IEC_PINS_OUT.clock);
-    let data = OutputPin::new("data", p.PIN_13.into());
-    assert_eq!(data.num, IEC_PINS_OUT.data);
-    let atn = OutputPin::new("atn", p.PIN_12.into());
-    assert_eq!(atn.num, IEC_PINS_OUT.atn);
-    let reset = OutputPin::new("reset", p.PIN_10.into());
-    assert_eq!(reset.num, IEC_PINS_OUT.reset);
-    let srq = OutputPin::new("srq", p.PIN_14.into());
-    assert_eq!(srq.num, IEC_PINS_OUT.srq);
 
-    let mut pins = [
-        clock,
-        data,
-        atn,
-        reset,
-        srq,
-    ];
+    let (_, pins) = create_pins(p, false, true);
+    let mut pins = pins.unwrap();
 
     loop {
         for pin in pins.iter_mut() {

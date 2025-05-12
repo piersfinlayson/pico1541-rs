@@ -16,42 +16,24 @@ use {defmt_rtt as _, panic_probe as _};
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_rp::gpio::Level;
-use pico1541_rs::test::{IEC_PINS_IN, InputPin};
-
-pub const DELAY_MS: u64 = 100;
+use pico1541_rs::test::create_pins;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
-    info!("pico1541 test receiver");
+    info!("pico1541 test sender");
 
-    // Create the pin objects
     let p = embassy_rp::init(Default::default());
-    let clock = InputPin::new("clock", p.PIN_19.into());
-    assert_eq!(clock.num, IEC_PINS_IN.clock);
-    let data = InputPin::new("data", p.PIN_20.into());
-    assert_eq!(data.num, IEC_PINS_IN.data);
-    let atn = InputPin::new("atn", p.PIN_17.into());
-    assert_eq!(atn.num, IEC_PINS_IN.atn);
-    let reset = InputPin::new("reset", p.PIN_18.into());
-    assert_eq!(reset.num, IEC_PINS_IN.reset);
-    let srq = InputPin::new("srq", p.PIN_16.into());
-    assert_eq!(srq.num, IEC_PINS_IN.srq);
 
-    let mut pins = [
-        clock,
-        data,
-        atn,
-        reset,
-        srq,
-    ];
+    let (pins, _) = create_pins(p, true, false);
+    let mut pins = pins.unwrap();
 
     loop {
         for pin in pins.iter_mut() {
             if pin.has_changed() {
                 if pin.get_level() == Level::High {
-                    info!("{} {} pin changed to high", pin.name, pin.num);
+                    info!("Pin {} {} changed to high", pin.name, pin.num);
                 } else {
-                    info!("{} {} pin changed to low", pin.name, pin.num);
+                    info!("Pin {} {} changed to low", pin.name, pin.num);
                 }
             }
         }
