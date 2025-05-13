@@ -30,10 +30,10 @@ pub mod entry;
 mod infra;
 mod protocol;
 mod task;
+pub mod test;
 mod usb;
 mod util;
 mod wifi;
-pub mod test;
 
 // Extra binary information that picotool can read.
 #[unsafe(link_section = ".bi_entries")]

@@ -47,6 +47,12 @@ path = "hw_tests/receiver.rs"
 test = false
 required-features = [ "pico1541" ]
 
+[[bin]]
+name = "test_drive"
+path = "hw_tests/drive.rs"
+test = false
+required-features = [ "pico1541" ]
+
 [dependencies]
 # embassy-rs crates - Note these are patched below to use a later version from
 # git.

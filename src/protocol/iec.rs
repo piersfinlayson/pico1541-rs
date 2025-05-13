@@ -63,10 +63,14 @@ pub struct Line {
     output_pin: Option<Flex<'static>>,
 }
 
-
 impl defmt::Format for Line {
     fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "Input: {}, Outupt: {}", self.input_pin_num, self.output_pin_num);
+        defmt::write!(
+            f,
+            "Input: {}, Outupt: {}",
+            self.input_pin_num,
+            self.output_pin_num
+        );
     }
 }
 
