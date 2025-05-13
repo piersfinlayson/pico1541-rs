@@ -228,7 +228,7 @@ impl Control {
                 info!("{} - unsupported, ignoring", request);
             }
             _ => unreachable!(),
-        };
+        }
         Ok(())
     }
 
@@ -277,8 +277,7 @@ impl Control {
                 Self::copy_string_to_buffer(version, buf);
             }
             _ => unreachable!(),
-        };
-
+        }
         Ok(response_len)
     }
 

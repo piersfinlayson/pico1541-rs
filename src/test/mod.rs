@@ -78,11 +78,12 @@ impl InputPin {
 
     pub fn has_changed(&mut self) -> bool {
         let level = self.pin.get_level();
-        if level != self.last_level {
+        if level == self.last_level {
+            false
+        } else {
             self.last_level = level;
-            return true;
+            true
         }
-        false
     }
 
     #[must_use]
@@ -91,7 +92,10 @@ impl InputPin {
     }
 }
 
-pub fn create_pins(p: Peripherals, input: bool, output: bool) -> (Option<[InputPin; 5]>, Option<[OutputPin; 5]>) {
+const NUM_PINS: usize = 5;
+#[allow(clippy::missing_panics_doc)]
+#[must_use]
+pub fn create_pins(p: Peripherals, input: bool, output: bool) -> (Option<[InputPin; NUM_PINS]>, Option<[OutputPin; NUM_PINS]>) {
     let output_pins = if output {
         // Create the pin objects
         let clock = OutputPin::new("clock", p.PIN_11.into());
@@ -129,16 +133,24 @@ pub fn create_pins(p: Peripherals, input: bool, output: bool) -> (Option<[InputP
         None
     };
 
+    // Configure receiving pins with Pull::Down because when two TXS0108E level
+    // shifters are connected back-to-back, their internal pull-ups create a 
+    // voltage divider with the driving 74LS04. This results in a ~1.2V signal 
+    // (instead of 0V) which is in the indeterminate range for the RP2040. 
+    // The pull-downs bias the input detection circuit to interpret this 
+    // borderline voltage as a LOW signal. This configuration is only necessary 
+    // for back-to-back testing scenarios and isn't needed when interfacing 
+    // with actual Commodore devices.
     let input_pins = if input {
-        let clock = InputPin::new("clock", p.PIN_19.into(), Pull::None);
+        let clock = InputPin::new("clock", p.PIN_19.into(), Pull::Down);
         assert_eq!(clock.num, IEC_PINS_IN.clock);
-        let data = InputPin::new("data", p.PIN_20.into(), Pull::None);
+        let data = InputPin::new("data", p.PIN_20.into(), Pull::Down);
         assert_eq!(data.num, IEC_PINS_IN.data);
-        let atn = InputPin::new("atn", p.PIN_17.into(), Pull::None);
+        let atn = InputPin::new("atn", p.PIN_17.into(), Pull::Down);
         assert_eq!(atn.num, IEC_PINS_IN.atn);
-        let reset = InputPin::new("reset", p.PIN_18.into(), Pull::None);
+        let reset = InputPin::new("reset", p.PIN_18.into(), Pull::Down);
         assert_eq!(reset.num, IEC_PINS_IN.reset);
-        let srq = InputPin::new("srq", p.PIN_16.into(), Pull::None);
+        let srq = InputPin::new("srq", p.PIN_16.into(), Pull::Down);
         assert_eq!(srq.num, IEC_PINS_IN.srq);
     
         let input_pins = [
