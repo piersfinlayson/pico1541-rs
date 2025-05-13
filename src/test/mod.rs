@@ -4,10 +4,13 @@
 //
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
-use defmt::{debug, trace};
+use defmt::{debug, info, trace, warn};
+use embassy_futures::select::{Either::First, select};
 use embassy_rp::Peripherals;
 use embassy_rp::gpio::{AnyPin, Drive, Flex, Input, Level, Output, Pin, Pull};
 use embassy_time::{Duration, Timer, with_timeout};
+
+const DEVICE_ID: u8 = 0x08;
 
 pub struct IecPins {
     pub clock: u8,
@@ -236,11 +239,20 @@ impl IecLine {
     }
 }
 
+// Protocol constants
+const IEC_LISTEN: u8 = 0x20;
+const IEC_TALK: u8 = 0x40;
+const IEC_UNLISTEN: u8 = 0x3F;
+const IEC_UNTALK: u8 = 0x5F;
+const IEC_OPEN_DATA: u8 = 0x60;
+const IEC_CLOSE: u8 = 0xE0;
+const IEC_OPEN: u8 = 0xF0;
+
 /// A device (as opposed to a controller) on the IEC bus
 pub struct IecDevice {
     pub clock: IecLine,
     pub data: IecLine,
-    pub atn: IecLine,
+    pub atn: Option<IecLine>,
 }
 
 impl IecDevice {
@@ -260,6 +272,7 @@ impl IecDevice {
         let atn = IecLine::new("atn", p.PIN_17.into(), p.PIN_12.into());
         assert_eq!(IEC_PINS_IN.atn, 17);
         assert_eq!(IEC_PINS_OUT.atn, 12);
+        let atn = Some(atn);
 
         IecDevice { clock, data, atn }
     }
@@ -349,19 +362,27 @@ impl IecDevice {
         Ok(byte_num + 1)
     }
 
+    // We remove atn from the IecDevice struct so we can run a select on it
+    // and self simultaneouslty - otherwise we would need to borrow self
+    // mutably twice.
     #[allow(clippy::missing_panics_doc)]
     pub async fn run(&mut self) -> ! {
         // Set all lines to inputs
         trace!("Releasing CLK, DATA, ATN");
         self.clock.set_as_input();
         self.data.set_as_input();
-        self.atn.set_as_input();
 
+        let mut atn = self.atn.take().unwrap();
+        atn.set_as_input();
+
+        let mut wait_atn = true;
         loop {
-            // Wait for ATN to be asserted
-            trace!("Wait for ATN");
-            self.atn.wait_for_low().await;
-            trace!("ATN asserted");
+            if wait_atn {
+                // Wait for ATN to be asserted
+                trace!("Wait for ATN");
+                atn.wait_for_low().await;
+                trace!("ATN asserted");
+            }
 
             // Read bytes
             let mut bytes = [0; Self::MAX_RECV_BYTES];
@@ -376,7 +397,159 @@ impl IecDevice {
                     break;
                 }
             }
+
+            // Handle the bytes - either:
+            // - The message (TALK, LISTEN, UNTALK or UNLISTEN) wasn't for us
+            // - It was a TALK for us
+            // - It was a LISTEN for us
+            // - It was an UNTALK for us
+            // - It was an UNLISTEN for us
+            //
+            // Do this within a select so ATN will interrupt us if necessary.
+            if let First(()) = select(
+                atn.wait_for_low(),
+                self.handle_atn_bytes(&bytes[0..num_bytes]),
+            )
+            .await
+            {
+                warn!("ATN asserted while processing previous ATN");
+                wait_atn = false;
+            } else {
+                wait_atn = true;
+            }
         }
+    }
+
+    #[allow(clippy::unused_async)]
+    #[allow(clippy::missing_panics_doc)]
+    async fn handle_atn_bytes(&mut self, bytes: &[u8]) {
+        assert!(!bytes.is_empty(), "get_command called with empty bytes");
+        // Check the first byte
+        let command = bytes[0];
+        if command == IEC_UNLISTEN {
+            trace!("UNLISTEN");
+            if bytes.len() > 1 {
+                warn!("Received UNLISTEN with extra bytes");
+                for (ii, byte) in bytes.iter().enumerate().skip(1) {
+                    debug!("  extra byte {}: 0x{:02x}", ii, byte);
+                }
+            }
+            self.unlisten();
+        } else if command == IEC_UNTALK {
+            trace!("UNTALK");
+            if bytes.len() > 1 {
+                warn!("Received UNTALK with extra bytes");
+                for (ii, byte) in bytes.iter().enumerate().skip(1) {
+                    debug!("  extra byte {}: 0x{:02x}", ii, byte);
+                }
+            }
+            self.untalk();
+        } else if command & IEC_LISTEN == IEC_LISTEN {
+            trace!("LISTEN");
+            self.listen(&bytes[0..]);
+        } else if command & IEC_TALK == IEC_TALK {
+            trace!("TALK");
+            self.talk(&bytes[0..]);
+        } else {
+            warn!("Received unknown command: 0x{:02x}", command);
+            for (ii, byte) in bytes.iter().enumerate().skip(1) {
+                debug!("  extra byte {}: 0x{:02x}", ii, byte);
+            }
+        }
+    }
+
+    #[allow(clippy::unused_self)]
+    fn untalk(&mut self) {
+        info!("UNTALK");
+    }
+
+    #[allow(clippy::unused_self)]
+    fn unlisten(&mut self) {
+        info!("UNLISTEN");
+    }
+
+    #[allow(clippy::unused_self)]
+    fn listen(&mut self, bytes: &[u8]) {
+        // Check the address
+        let address = Self::get_address(bytes[0]);
+        if address != DEVICE_ID {
+            debug!("LISTEN not for us {} - ignoring", address);
+            return;
+        }
+
+        if bytes.len() <= 1 {
+            warn!("LISTEN with no additional data - ignoring");
+            return;
+        }
+
+        // On LISTEN and TALK we support
+        // - OPEN CHANNEL/DATA (0x60 | secondary address/channel)
+        // - CLOSE (0xE0 | secondary address/channel)
+        // - CLOSE CHANNEL (0xF0 | secondary address/channel)
+        if bytes[1] & IEC_OPEN_DATA == IEC_OPEN_DATA {
+            let channel = bytes[1] & 0xF;
+            info!("UNLISTEN OPEN DATA for channel {}", channel);
+
+            if bytes.len() > 2 {
+                warn!("Received OPEN DATA with extra bytes");
+                for (ii, byte) in bytes.iter().enumerate().skip(2) {
+                    debug!("  extra byte {}: 0x{:02x}", ii, byte);
+                }
+            }
+        } else if bytes[1] & IEC_CLOSE == IEC_CLOSE {
+            let channel = bytes[1] & 0xF;
+            info!("UNLISTEN CLOSE for channel {}", channel);
+        } else if bytes[1] & IEC_OPEN == IEC_OPEN {
+            let channel = bytes[1] & 0xF;
+            info!("UNLISTEN OPEN for channel {}", channel);
+        } else {
+            warn!("UNLISTEN LISTEN with unknown command: 0x{:02x}", bytes[1]);
+            return;
+        }
+    }
+
+    #[allow(clippy::unused_self)]
+    fn talk(&mut self, bytes: &[u8]) {
+        // Check the address
+        let address = Self::get_address(bytes[0]);
+        if address != DEVICE_ID {
+            debug!("TALK not for us {} - ignoring", address);
+            return;
+        }
+
+        if bytes.len() <= 1 {
+            warn!("TALK with no additional data - ignoring");
+            return;
+        }
+
+        // On LISTEN and TALK we support
+        // - OPEN CHANNEL/DATA (0x60 | secondary address/channel)
+        // - CLOSE (0xE0 | secondary address/channel)
+        // - CLOSE CHANNEL (0xF0 | secondary address/channel)
+        if bytes[1] & IEC_OPEN_DATA == IEC_OPEN_DATA {
+            let channel = bytes[1] & 0xF;
+            info!("TALK OPEN DATA for channel {}", channel);
+
+            if bytes.len() > 2 {
+                warn!("Received OPEN DATA with extra bytes");
+                for (ii, byte) in bytes.iter().enumerate().skip(2) {
+                    debug!("  extra byte {}: 0x{:02x}", ii, byte);
+                }
+            }
+        } else if bytes[1] & IEC_CLOSE == IEC_CLOSE {
+            let channel = bytes[1] & 0xF;
+            info!("TALK CLOSE for channel {}", channel);
+        } else if bytes[1] & IEC_OPEN == IEC_OPEN {
+            let channel = bytes[1] & 0xF;
+            info!("TALK OPEN for channel {}", channel);
+        } else {
+            warn!("TALK with unknown command: 0x{:02x}", bytes[1]);
+            return;
+        }
+    }
+
+    fn get_address(command: u8) -> u8 {
+        command & 0x1F
     }
 }
 

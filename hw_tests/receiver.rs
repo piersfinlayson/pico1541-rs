@@ -1,5 +1,5 @@
 //! test_sender
-//! 
+//!
 //! Tests the pico1541 hardware, by "receiving" data - detects when each IEC
 //! line is toggled, and outputs a log message using RTT.  This is intended to
 //! be used in conjunction with the `test_sender` program, which will drive the
@@ -12,11 +12,11 @@
 #![no_std]
 #![no_main]
 
-use {defmt_rtt as _, panic_probe as _};
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_rp::gpio::Level;
 use pico1541_rs::test::create_pins;
+use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) -> ! {
