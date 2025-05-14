@@ -83,11 +83,11 @@ impl Line {
         output_pin_num: u8,
         output_pin: Flex<'static>,
     ) -> Self {
-        // Initialize with input having pull-up and output low (inverted released state)
-        // Initialize the input pin as an input with pull-up
+        // Initialize with input having no pull-ups/downs (TXS0108E has pull-
+        // ups on its outputs) and output low (inverted released state).
         let mut input = input_pin;
         input.set_as_input();
-        input.set_pull(Pull::Up);
+        input.set_pull(Pull::None);
 
         // Initialize the output pin as a floating input to being with, and
         // also set the output drive strength for the future.
@@ -746,7 +746,7 @@ impl IecDriver {
         match with_timeout(timeout, self.check_bus_until_free()).await {
             Ok(result) => result,
             Err(_timeout_error) => {
-                debug!("Timed out waiting for the bus to be free (expected if no drive");
+                debug!("Timed out waiting for the bus to be free (expected if no drive)");
                 Err(DriverError::Timeout)
             }
         }
@@ -762,6 +762,7 @@ impl IecDriver {
 
         // If DATA is held, drive is not yet ready
         if self.bus.get_data() {
+            trace!("DATA held");
             block_us!(150);
             return false;
         }
@@ -769,6 +770,7 @@ impl IecDriver {
         // Ensure DATA is stable
         yield_us!(50);
         if self.bus.get_data() {
+            trace!("DATA not stable");
             block_us!(100);
             return false;
         }
@@ -779,6 +781,7 @@ impl IecDriver {
 
         // If DATA is still unset, no drive answered
         if !self.bus.get_data() {
+            trace!("DATA not held");
             self.bus.release_atn();
             return false;
         }

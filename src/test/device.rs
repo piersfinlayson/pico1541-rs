@@ -6,6 +6,7 @@
 //! #![no_main]
 //! 
 //! use embassy_executor::Spawner;
+//! use embassy_futures::yield_now;
 //! use pico1541_rs::test::device::{IecDev, run_iec_device};
 //! 
 //! static mut DEVICE: Option<IecDev> = None;
@@ -19,7 +20,9 @@
 //!             spawner.spawn(run_iec_device(device)).unwrap();
 //!         }
 //!     }
-//!     loop {}
+//!     loop {
+//!         yield_now();
+//!     }
 //! }
 //! ```
 
@@ -28,7 +31,7 @@
 // GPLv3 licensed - see https://www.gnu.org/licenses/gpl-3.0.html
 
 use defmt::{debug, info, trace, warn};
-use embassy_futures::select::{Either::First, select};
+use embassy_futures::select::{Either::{First, Second}, select};
 use embassy_rp::Peripherals;
 use embassy_rp::gpio::{AnyPin, Drive, Flex, Input, Pull};
 use embassy_time::{Duration, Timer, with_timeout};
@@ -72,13 +75,16 @@ impl BusLine {
     /// 
     /// # Arguments
     /// - `high`: If true, set the line high, otherwise set it low 
+    /// 
+    /// # Notes
+    /// Output pins are inverted via a 74LS04.
     pub fn set_as_output(&mut self, high: bool) {
         if high {
-            self.output.set_high();
-        } else {
             self.output.set_low();
+        } else {
+            self.output.set_high();
         }
-        self.output.set_drive_strength(Drive::_4mA);
+        self.output.set_drive_strength(Drive::_12mA);
         self.output.set_as_output();
         self.is_output = true;
     }
@@ -118,6 +124,9 @@ impl BusLine {
     /// # Panics
     /// Panics if `get()` is called on an output pin - call `set_as_input()`
     /// first.
+    /// 
+    /// # Notes
+    /// Input pins are not inverted
     pub fn get(&mut self) -> bool {
         assert!(!self.is_output, "get() called on output pin");
         self.input.is_high()
@@ -130,7 +139,7 @@ impl BusLine {
     /// `set_as_input()` first.
     pub async fn wait_for_low(&mut self) {
         assert!(!self.is_output, "wait_for_low() called on output pin");
-        self.input.wait_for_high().await;
+        self.input.wait_for_low().await;
     }
 
     /// Wait for the line to go high
@@ -140,7 +149,7 @@ impl BusLine {
     /// `set_as_input()` first.
     pub async fn wait_for_high(&mut self) {
         assert!(!self.is_output, "wait_for_high() called on output pin");
-        self.input.wait_for_low().await;
+        self.input.wait_for_high().await;
     }
 }
 
@@ -340,6 +349,7 @@ impl IecDev {
     /// be a coding error.
     #[must_use]
     pub fn new(p: Peripherals, device_id: u8) -> Self {
+        trace!("Creating IecDev with device_id {}", device_id);
         let clock = BusLine::new(p.PIN_19.into(), p.PIN_11.into());
         assert_eq!(IEC_PINS_IN.clock, 19);
         assert_eq!(IEC_PINS_OUT.clock, 11);
@@ -359,6 +369,10 @@ impl IecDev {
     }
 
     async fn receive_bytes(&mut self, bytes: &mut [u8; Self::MAX_RECV_BYTES]) -> Result<usize, ()> {
+        // Wait for CLK to go low
+        trace!("Wait for CLK");
+        self.clock.wait_for_low().await;
+        
         let mut byte_num = 0;
         loop {
             let (eoi, byte) = self.receive_byte().await?;
@@ -380,6 +394,25 @@ impl IecDev {
         Ok(byte_num)
     }
 
+    async fn receive_command_bytes(&mut self, bytes: &mut [u8; Self::MAX_RECV_BYTES]) -> Result<usize, ()> {
+        trace!("Receive command bytes");
+
+        // Read bytes
+        let num_bytes = self.receive_bytes(bytes).await.unwrap();
+
+        debug!("Received {} bytes", num_bytes);
+        let mut byte_num = 0;
+        loop {
+            debug!("Byte {}: 0x{:02x}", byte_num, bytes[byte_num]);
+            byte_num += 1;
+            if byte_num >= num_bytes {
+                break;
+            }
+        }
+        
+        Ok(byte_num)
+    }
+
     // We remove atn from the IecDev struct so we can run a select on it
     // and self simultaneouslty - otherwise we would need to borrow self
     // mutably twice.
@@ -397,23 +430,50 @@ impl IecDev {
             if wait_atn {
                 // Wait for ATN to be asserted
                 trace!("Wait for ATN");
+                self.clock.set_as_input();
+                self.data.set_as_input();
                 atn.wait_for_low().await;
                 trace!("ATN asserted");
             }
 
-            // Read bytes
-            let mut bytes = [0; Self::MAX_RECV_BYTES];
-            let num_bytes = self.receive_bytes(&mut bytes).await.unwrap();
+            // Must release CLK, if held.  It might be held if we got
+            // interrupted by ATN.
+            self.clock.set_as_input();
 
-            debug!("Received {} bytes", num_bytes);
-            let mut byte_num = 0;
-            loop {
-                debug!("Byte {}: 0x{:02x}", byte_num, bytes[byte_num]);
-                byte_num += 1;
-                if byte_num >= num_bytes {
-                    break;
+            // Pull DATA low to signify we're here and ready to receive.
+            trace!("ATN - Assert DATA");
+            self.data.set_as_output(false);
+
+            // Wait for CLK to go low - the controller should do this
+            // immediately after it pulls ATN low, unless it decides to
+            // release ATN.
+            let mut bytes = [0; Self::MAX_RECV_BYTES];
+            let num_bytes = match select(
+                atn.wait_for_high(),
+                self.receive_command_bytes(&mut bytes),
+            ).await {
+                First(()) => {
+                    // Controller released ATN before we received the command
+                    // bytes.  It may do this if it's an xum1541 performing a
+                    // bus reset.
+                    debug!("ATN released during command sequence");
+
+                    // Restart our loop waiting for ATN
+                    wait_atn = true;
+                    continue;
                 }
-            }
+                Second(result) => {
+                    // We received the command bytes
+                    if let Ok(num_bytes) = result{
+                        trace!("Received {} bytes", num_bytes);
+                        num_bytes
+                    } else {
+                        warn!("Error receiving command bytes");
+                        wait_atn = true;
+                        continue;
+                    }
+                }
+            };
 
             // Handle the bytes - either:
             // - The message (TALK, LISTEN, UNTALK or UNLISTEN) wasn't for us
@@ -429,7 +489,7 @@ impl IecDev {
             )
             .await
             {
-                warn!("ATN asserted while processing previous ATN");
+                debug!("ATN asserted while processing previous ATN");
                 wait_atn = false;
             } else {
                 wait_atn = true;
@@ -548,11 +608,7 @@ impl IecDev {
     }
 
     async fn receive_byte(&mut self) -> Result<(bool, u8), ()> {
-        // Wait for CLK to go low
-        trace!("Wait for CLK");
-        self.clock.wait_for_low().await;
-
-        // Pull DATA low to signify we're ready to receive
+        // Release DATA low to signify we're ready to receive
         trace!("Assert DATA");
         self.data.set_as_output(false);
 
@@ -575,19 +631,21 @@ impl IecDev {
             self.data.set_as_output(false);
             Timer::after_micros(60).await;
 
-            // Wait for CLK to go high and release DATA
-            trace!("(EOI) Wait for CLK deasserted");
-            self.clock.wait_for_high().await;
+            // Release DATA again
             self.data.set_as_input();
+
+            // Wait for CLK to go low
+            trace!("Wait for CLK");
+            self.clock.wait_for_low().await;
         }
 
         // Read the byte
         let mut byte: u8 = 0;
         let mut bit_num: u8 = 0;
         loop {
-            // Wait for CLK to go low to signify a bit is waiting
-            trace!("(Bit {}) Wait for CLK", bit_num);
-            self.clock.wait_for_low().await;
+            // Wait for CLK to go high to signify a bit is waiting
+            trace!("(Bit {}) Wait for CLK high", bit_num);
+            self.clock.wait_for_high().await;
 
             // Read data bit
             trace!("Read data bit");
@@ -598,8 +656,8 @@ impl IecDev {
             }
 
             // Wait for CLK to go high
-            trace!("Wait for CLK deasserted");
-            self.clock.wait_for_high().await;
+            trace!("Wait for CLK");
+            self.clock.wait_for_low().await;
 
             bit_num += 1;
             if bit_num >= 8 {
@@ -712,5 +770,6 @@ impl IecDev {
 /// - `device`: A mutable reference to the `IecDev` object
 #[embassy_executor::task]
 pub async fn run_iec_device(device: &'static mut IecDev) -> ! {
+    info!("Starting IEC device");
     device.run().await
 }
