@@ -7,7 +7,7 @@
 
 #[allow(unused_imports)]
 use defmt::{debug, error, info, trace, warn};
-use embassy_rp::gpio::{Flex, Pull};
+use embassy_rp::gpio::{Drive, Flex, Pull};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 
 use super::driver::{DriverError, ProtocolDriver};
@@ -89,10 +89,10 @@ impl Line {
         input.set_as_input();
         input.set_pull(Pull::Up);
 
-        // Initialize the output pin as an output with low level (inverted
-        // released state - which means it will be physically high on the bus)
+        // Initialize the output pin as a floating input to being with, and
+        // also set the output drive strength for the future.
         let mut output = output_pin;
-        output.set_low();
+        output.set_drive_strength(Drive::_12mA);
         output.set_as_input();
 
         // Create the Line.
@@ -113,6 +113,7 @@ impl Line {
     // because the set(), release(), get() and is_set() functions all use
     // unwrap().
     pub fn take_pins(&mut self) -> (u8, Option<Flex<'static>>, u8, Option<Flex<'static>>) {
+        self.output_is_output = false;
         (
             self.input_pin_num,
             self.input_pin.take(),
@@ -141,7 +142,8 @@ impl Line {
     }
 
     /// Read the current state of the line.  This returns true is the line
-    /// is active - as it is not inverted, this means true if low.
+    /// is active/asserted - as inputs are not inverted, this means true if
+    /// low.
     #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn get(&self) -> bool {
@@ -149,17 +151,6 @@ impl Line {
             warn!("get() called on output pin");
         }
         self.input_pin.as_ref().unwrap().is_low()
-    }
-
-    /// Check if line is currently being driven low - inverted pin so high
-    #[allow(clippy::inline_always)]
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub fn is_set(&self) -> bool {
-        if !self.output_is_output {
-            warn!("is_set() called on inpu pin");
-        }
-        self.output_pin.as_ref().unwrap().is_set_high()
     }
 }
 
