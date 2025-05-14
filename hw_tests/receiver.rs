@@ -15,7 +15,7 @@
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_rp::gpio::Level;
-use pico1541_rs::test::create_pins;
+use pico1541_rs::test::pins::create_pins;
 use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::main]
@@ -30,6 +30,7 @@ async fn main(_spawner: Spawner) -> ! {
     loop {
         for pin in pins.iter_mut() {
             if pin.has_changed() {
+                #[allow(clippy::if_same_then_else)]
                 if pin.get_level() == Level::High {
                     info!("Pin {} {} changed to high", pin.name, pin.num);
                 } else {

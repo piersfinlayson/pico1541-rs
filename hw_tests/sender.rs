@@ -14,7 +14,7 @@
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use pico1541_rs::test::create_pins;
+use pico1541_rs::test::pins::create_pins;
 use {defmt_rtt as _, panic_probe as _};
 
 pub const DELAY_MS: u64 = 2500;

@@ -11,10 +11,14 @@
 
 use defmt::info;
 use embassy_executor::Spawner;
-use pico1541_rs::test::{IecDevice, run_iec_device};
+use pico1541_rs::test::device::{IecDev, run_iec_device};
 use {defmt_rtt as _, panic_probe as _};
 
-static mut DEVICE: Option<IecDevice> = None;
+// Device ID
+const DEVICE_ID: u8 = 0x08;
+
+// Static mutable reference to the IEC device
+static mut DEVICE: Option<IecDev> = None;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
@@ -25,7 +29,7 @@ async fn main(spawner: Spawner) -> ! {
     // This is test code, so we aren't too worried about taking a shortcut here
     // with a static mutable ref.
     unsafe {
-        DEVICE = Some(IecDevice::new(p));
+        DEVICE = Some(IecDev::new(p, DEVICE_ID));
 
         if let Some(ref mut device) = DEVICE {
             spawner.spawn(run_iec_device(device)).unwrap();
