@@ -61,6 +61,7 @@ pub struct Line {
     input_pin: Option<Flex<'static>>,
     output_pin_num: u8,
     output_pin: Option<Flex<'static>>,
+    output_is_output: bool,
 }
 
 impl defmt::Format for Line {
@@ -91,8 +92,8 @@ impl Line {
         // Initialize the output pin as an output with low level (inverted
         // released state - which means it will be physically high on the bus)
         let mut output = output_pin;
-        output.set_as_output();
         output.set_low();
+        output.set_as_input();
 
         // Create the Line.
         Self {
@@ -100,6 +101,7 @@ impl Line {
             output_pin_num,
             input_pin: Some(input),
             output_pin: Some(output),
+            output_is_output: false,
         }
     }
 
@@ -123,14 +125,19 @@ impl Line {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn set(&mut self) {
-        self.output_pin.as_mut().unwrap().set_high();
+        let output = self.output_pin.as_mut().unwrap();
+        output.set_high();
+        output.set_as_output();
+        self.output_is_output = true;
     }
 
     /// Release the output line (inactive) - output is inverted pin so low
     #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release(&mut self) {
-        self.output_pin.as_mut().unwrap().set_low();
+        let output = self.output_pin.as_mut().unwrap();
+        output.set_as_input();
+        self.output_is_output = false;
     }
 
     /// Read the current state of the line.  This returns true is the line
@@ -138,6 +145,9 @@ impl Line {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn get(&self) -> bool {
+        if self.output_is_output {
+            warn!("get() called on output pin");
+        }
         self.input_pin.as_ref().unwrap().is_low()
     }
 
@@ -146,6 +156,9 @@ impl Line {
     #[allow(dead_code)]
     #[inline(always)]
     pub fn is_set(&self) -> bool {
+        if !self.output_is_output {
+            warn!("is_set() called on inpu pin");
+        }
         self.output_pin.as_ref().unwrap().is_set_high()
     }
 }
