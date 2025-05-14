@@ -78,11 +78,11 @@ impl Line {
         output_pin_num: u8,
         output_pin: Flex<'static>,
     ) -> Self {
-        // Initialize with input having pull-up and output low (inverted released state)
-        // Initialize the input pin as an input with pull-up
+        // Initialize with input having no pull-ups/downs (TXS0108E has pull-
+        // ups on its outputs) and output low (inverted released state).
         let mut input = input_pin;
         input.set_as_input();
-        input.set_pull(Pull::Up);
+        input.set_pull(Pull::None);
 
         // Initialize the output pin as an output with low level (inverted
         // released state - which means it will be physically high on the bus)
