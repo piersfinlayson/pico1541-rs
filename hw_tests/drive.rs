@@ -9,8 +9,9 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
+use defmt::{error, info};
 use embassy_executor::Spawner;
+use embassy_futures::yield_now;
 use pico1541_rs::test::device::{IecDev, run_iec_device};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -33,11 +34,14 @@ async fn main(spawner: Spawner) -> ! {
 
         if let Some(ref mut device) = DEVICE {
             spawner.spawn(run_iec_device(device)).unwrap();
+        } else {
+            error!("Failed to create IEC device");
         }
     }
 
-    info!("IEC Device running");
-
     #[allow(clippy::empty_loop)]
-    loop {}
+    loop {
+        // Do nothing, the IEC device is running in its own task
+        yield_now().await;
+    }
 }

@@ -758,6 +758,7 @@ impl IecDriver {
 
         // If DATA is held, drive is not yet ready
         if self.bus.get_data() {
+            trace!("DATA held");
             block_us!(150);
             return false;
         }
@@ -765,6 +766,7 @@ impl IecDriver {
         // Ensure DATA is stable
         yield_us!(50);
         if self.bus.get_data() {
+            trace!("DATA not stable");
             block_us!(100);
             return false;
         }
@@ -775,6 +777,7 @@ impl IecDriver {
 
         // If DATA is still unset, no drive answered
         if !self.bus.get_data() {
+            trace!("DATA not held");
             self.bus.release_atn();
             return false;
         }
