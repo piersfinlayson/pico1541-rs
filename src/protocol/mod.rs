@@ -28,13 +28,13 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointIn;
 
+use crate::constants::DRIVE_OPERATION_WATCHDOG_TIMER;
 use driver::{
     DRIVER, Driver, DriverError, ProtocolDriver, abort, clear_abort, driver_in_use, raw_read_task,
     raw_write_task,
 };
 use iec::{IecBus, IecDriver, Line};
 use types::Direction;
-use crate::constants::DRIVE_OPERATION_WATCHDOG_TIMER;
 
 use crate::constants::{
     LOOP_LOG_INTERVAL, MAX_EP_PACKET_SIZE_USIZE, MAX_WRITE_SIZE_USIZE, PROTOCOL_LOOP_TIMER,
@@ -673,9 +673,7 @@ impl ProtocolHandler {
         }
 
         // Now switch around the watchdog tasks
-        self.watchdog
-            .deregister_task(&TaskId::DriveOperation)
-            .await;
+        self.watchdog.deregister_task(&TaskId::DriveOperation).await;
         self.watchdog
             .register_task(&TaskId::ProtocolHandler, PROTOCOL_WATCHDOG_TIMER)
             .await;

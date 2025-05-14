@@ -1,5 +1,5 @@
 //! test_sender
-//! 
+//!
 //! Tests the pico1541 hardware, by "sending" data - toggles each IEC line in
 //! turn.  This is intended to be used in conjunction with the `test_receiver`
 //! program, which will detect the toggling lines and output logs using RTT.
@@ -11,11 +11,11 @@
 #![no_std]
 #![no_main]
 
-use {defmt_rtt as _, panic_probe as _};
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use pico1541_rs::test::create_pins;
+use pico1541_rs::test::pins::create_pins;
+use {defmt_rtt as _, panic_probe as _};
 
 pub const DELAY_MS: u64 = 2500;
 
