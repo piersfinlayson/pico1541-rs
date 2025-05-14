@@ -742,7 +742,7 @@ impl IecDriver {
         match with_timeout(timeout, self.check_bus_until_free()).await {
             Ok(result) => result,
             Err(_timeout_error) => {
-                debug!("Timed out waiting for the bus to be free (expected if no drive");
+                debug!("Timed out waiting for the bus to be free (expected if no drive)");
                 Err(DriverError::Timeout)
             }
         }
