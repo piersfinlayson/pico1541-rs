@@ -57,7 +57,7 @@ required-features = [ "pico1541" ]
 # embassy-rs crates - Note these are patched below to use a later version from
 # git.
 embassy-executor = { version = "0.7", features = ["task-arena-size-32768", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-rp = { version = "0.4", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "binary-info", "intrinsics"] }
+embassy-rp = { version = "0.4", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "intrinsics"] }
 embassy-usb = { version = "0.4", features = ["defmt"] }
 embassy-futures = { version = "0.1" }
 embassy-sync = { version = "0.6", features = ["defmt"] }

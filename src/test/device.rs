@@ -63,7 +63,7 @@ impl BusLine {
         let input = Input::new(input_pin, Pull::Down);
         let mut output = Flex::new(output_pin);
         output.set_as_input();
-        output.set_pull(Pull::None);
+        output.set_pull(Pull::Up);
         Self {
             input,
             output,

@@ -87,12 +87,13 @@ impl Line {
         // ups on its outputs) and output low (inverted released state).
         let mut input = input_pin;
         input.set_as_input();
-        input.set_pull(Pull::None);
+        input.set_pull(Pull::Up);
 
         // Initialize the output pin as a floating input to being with, and
         // also set the output drive strength for the future.
         let mut output = output_pin;
         output.set_drive_strength(Drive::_12mA);
+        output.set_pull(Pull::None);
         output.set_as_input();
 
         // Create the Line.
@@ -136,9 +137,22 @@ impl Line {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release(&mut self) {
-        let output = self.output_pin.as_mut().unwrap();
-        output.set_as_input();
+        trace!("Releasing line");
+        self.output_pin.as_mut().unwrap().set_as_input();
+        self.output_pin.as_mut().unwrap().set_low();
         self.output_is_output = false;
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    pub fn de_assert(&mut self) {
+        trace!("De-asserting line");
+        self.output_pin.as_mut().unwrap().set_low();
+        if !self.output_is_output {
+            warn!("deassert() called on input pin - setting to output");
+            self.output_pin.as_mut().unwrap().set_as_output();
+            self.output_is_output = true;
+        }
     }
 
     /// Read the current state of the line.  This returns true is the line
@@ -268,7 +282,7 @@ impl IecBus {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn release_reset(&mut self) {
-        self.reset.release();
+        self.reset.de_assert();
     }
 
     #[allow(clippy::inline_always)]

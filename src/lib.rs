@@ -36,11 +36,11 @@ mod util;
 mod wifi;
 
 // Extra binary information that picotool can read.
-#[unsafe(link_section = ".bi_entries")]
-#[used]
-pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
-    embassy_rp::binary_info::rp_program_name!(c"pico1541 by piers.rocks"),
-    embassy_rp::binary_info::rp_program_description!(c"A USB-based Commodore disk drive adapter for PCs, compatible with OpenCBM, a drop-in replacement for the xum1541, and provides additional, functionality, like WiFi support."),
-    embassy_rp::binary_info::rp_cargo_version!(),
-    embassy_rp::binary_info::rp_program_build_attribute!(),
-];
+//#[unsafe(link_section = ".bi_entries")]
+//#[used]
+//pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
+//    embassy_rp::binary_info::rp_program_name!(c"pico1541 by piers.rocks"),
+//    embassy_rp::binary_info::rp_program_description!(c"A USB-based Commodore disk drive adapter for PCs, compatible with OpenCBM, a drop-in replacement for the xum1541, and provides additional, functionality, like WiFi support."),
+//    embassy_rp::binary_info::rp_cargo_version!(),
+//    embassy_rp::binary_info::rp_program_build_attribute!(),
+//];
